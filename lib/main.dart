@@ -84,49 +84,75 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme, c = Theme.of(context).colorScheme;
+    final t = Theme.of(context).textTheme, d = isDark(context);
     return Scaffold(
-      appBar: AppBar(actions: [
-        ValueListenableBuilder(
-          valueListenable: themeMode,
-          builder: (_, m, _) => IconButton(
-            tooltip: 'Theme: ${m.name}',
-            onPressed: cycleTheme,
-            icon: Icon(switch (m) { ThemeMode.light => Icons.light_mode_rounded, ThemeMode.dark => Icons.dark_mode_rounded, _ => Icons.brightness_auto_rounded }),
+      appBar: AppBar(
+        shape: const Border(),
+        titleSpacing: 20,
+        title: Row(children: [
+          ClipRRect(borderRadius: BorderRadius.circular(7), child: Image.asset(d ? 'assets/logo_dark.png' : 'assets/logo.png', width: 26, height: 26)),
+          const SizedBox(width: 10),
+          const Text('Pixelfixo'),
+        ]),
+        actions: [
+          ValueListenableBuilder(
+            valueListenable: themeMode,
+            builder: (_, m, _) => IconButton(
+              tooltip: 'Theme: ${m.name}',
+              onPressed: cycleTheme,
+              icon: Icon(switch (m) { ThemeMode.light => Icons.light_mode_outlined, ThemeMode.dark => Icons.dark_mode_outlined, _ => Icons.brightness_auto_outlined }),
+            ),
           ),
-        ),
-        IconButton(tooltip: 'About', onPressed: () => showAbout(context), icon: const Icon(Icons.info_outline_rounded)),
-      ]),
+          PopupMenuButton<int>(
+            tooltip: 'More',
+            icon: const Icon(Icons.more_horiz),
+            onSelected: (_) => showAbout(context),
+            itemBuilder: (_) => const [PopupMenuItem(value: 0, child: Text('Open source licenses'))],
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Spacer(),
-            TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0, end: 1),
-              duration: const Duration(milliseconds: 700),
-              curve: Curves.easeOutBack,
-              builder: (_, v, child) => Transform.scale(scale: .7 + .3 * v, alignment: Alignment.centerLeft, child: Opacity(opacity: v.clamp(0, 1), child: child)),
-              child: Container(
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: brandA.withValues(alpha: .35), blurRadius: 40, offset: const Offset(0, 12))]),
-                child: ClipRRect(borderRadius: BorderRadius.circular(28), child: Image.asset('assets/logo.png', width: 96, height: 96)),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const SizedBox(height: 24),
+            Text('Bigger, sharper\nphotos.', style: t.displaySmall?.copyWith(height: 1.05)),
+            const SizedBox(height: 12),
+            Text('Upscale any photo up to 4x on your phone. Nothing leaves the device.', style: t.bodyLarge?.copyWith(color: Mono.muted(d), height: 1.4)),
+            const SizedBox(height: 28),
+            Expanded(
+              child: Material(
+                color: Mono.card(d),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: Mono.line(d))),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: () => pickPhoto(context),
+                  child: Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Mono.line(d))),
+                        child: Icon(Icons.add_photo_alternate_outlined, color: Mono.ink(d)),
+                      ),
+                      const SizedBox(height: 16),
+                      Text('Choose a photo', style: t.titleMedium),
+                      const SizedBox(height: 4),
+                      Text('JPG, PNG or WebP from your gallery', style: t.bodySmall?.copyWith(color: Mono.muted(d))),
+                    ]),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 28),
-            Text('Pixelfixo', style: t.displaySmall),
-            const SizedBox(height: 8),
-            Text('Make small photos big and sharp, right on your phone.', style: t.titleMedium?.copyWith(color: c.onSurfaceVariant, fontWeight: FontWeight.w400)),
-            const SizedBox(height: 24),
-            Wrap(spacing: 8, runSpacing: 8, children: const [
-              _Pill(Icons.bolt_rounded, 'Up to 4x'),
-              _Pill(Icons.wifi_off_rounded, 'Works offline'),
-              _Pill(Icons.all_inclusive_rounded, 'No limits'),
-              _Pill(Icons.palette_outlined, 'True colors'),
-            ]),
-            const Spacer(flex: 2),
-            GradientButton(label: 'Pick a photo', icon: Icons.add_photo_alternate_rounded, onPressed: () => pickPhoto(context)),
-            const SizedBox(height: 14),
-            Center(child: Text('Or share a photo to Pixelfixo from any app', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant))),
+            const SizedBox(height: 20),
+            const _Fact(Icons.open_in_full, 'Up to 4x', 'Three modes'),
+            const _Fact(Icons.cloud_off_outlined, 'Works offline', 'No uploads'),
+            const _Fact(Icons.all_inclusive, 'No limits', 'No ads or account', last: true),
+            const SizedBox(height: 20),
+            FilledButton(onPressed: () => pickPhoto(context), child: const Text('Choose photo')),
+            const SizedBox(height: 12),
+            Text('You can also share a photo to Pixelfixo from any app', textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: Mono.muted(d))),
           ]),
         ),
       ),
@@ -134,20 +160,23 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-class _Pill extends StatelessWidget {
+class _Fact extends StatelessWidget {
   final IconData icon;
-  final String text;
-  const _Pill(this.icon, this.text);
+  final String title, sub;
+  final bool last;
+  const _Fact(this.icon, this.title, this.sub, {this.last = false});
   @override
   Widget build(BuildContext context) {
-    final c = Theme.of(context).colorScheme;
+    final d = isDark(context), t = Theme.of(context).textTheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(color: c.primary.withValues(alpha: .1), borderRadius: BorderRadius.circular(99)),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 16, color: c.primary),
-        const SizedBox(width: 6),
-        Text(text, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: c.primary)),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: Mono.line(d)), bottom: last ? BorderSide(color: Mono.line(d)) : BorderSide.none)),
+      child: Row(children: [
+        Icon(icon, size: 18, color: Mono.ink(d)),
+        const SizedBox(width: 14),
+        Text(title, style: t.titleSmall),
+        const Spacer(),
+        Text(sub, style: t.bodySmall?.copyWith(color: Mono.muted(d))),
       ]),
     );
   }
@@ -156,7 +185,7 @@ class _Pill extends StatelessWidget {
 void showAbout(BuildContext context) => showLicensePage(
       context: context,
       applicationName: 'Pixelfixo',
-      applicationVersion: '1.0.0',
+      applicationVersion: '1.0.1',
       applicationIcon: Padding(padding: const EdgeInsets.all(12), child: ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.asset('assets/logo.png', width: 64))),
       applicationLegalese: 'MIT license. Upscaling models: 4xLSDIRCompactC and 4xNomosWebPhoto_RealPLKSR by Philip Hofmann (CC BY 4.0), '
           'Real-ESRGAN anime 6B by Xintao Wang et al. (BSD-3-Clause). Runs on ONNX Runtime (MIT).',

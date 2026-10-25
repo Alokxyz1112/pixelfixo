@@ -147,7 +147,7 @@ class _EditorScreenState extends State<EditorScreen> {
           title: Text(phase == Phase.done ? 'Before and after' : 'Upscale'),
           actions: [
             if (phase == Phase.done)
-              IconButton(tooltip: 'Change settings', icon: const Icon(Icons.tune_rounded), onPressed: () => setState(() => phase = Phase.setup)),
+              IconButton(tooltip: 'Change settings', icon: const Icon(Icons.tune), onPressed: () => setState(() => phase = Phase.setup)),
           ],
         ),
         body: SafeArea(
@@ -185,9 +185,9 @@ class _EditorScreenState extends State<EditorScreen> {
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: Row(children: [
-          Expanded(child: OutlinedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.photo_library_outlined), label: const Text('New photo'))),
+          Expanded(child: OutlinedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.photo_library_outlined, size: 20), label: const Text('New photo'))),
           const SizedBox(width: 12),
-          Expanded(child: GradientButton(label: saved ? 'Saved' : 'Save', icon: saved ? Icons.check_rounded : Icons.download_rounded, onPressed: saved ? null : _save)),
+          Expanded(child: FilledButton.icon(onPressed: saved ? null : _save, icon: Icon(saved ? Icons.check : Icons.download_outlined, size: 20), label: Text(saved ? 'Saved' : 'Save'))),
         ]),
       ),
     ]);
@@ -201,7 +201,7 @@ class _EditorScreenState extends State<EditorScreen> {
       Expanded(
         child: ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(16),
             child: Container(
               color: c.surfaceContainerHighest,
               constraints: const BoxConstraints(maxHeight: 260),
@@ -214,23 +214,13 @@ class _EditorScreenState extends State<EditorScreen> {
               child: Text('${s.width.round()} x ${s.height.round()}  to  ${s.width.round() * scale} x ${s.height.round() * scale}',
                   style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
             ),
-          const SizedBox(height: 16),
-          _section(context, 'Size', SegmentedButton<int>(
-            segments: const [ButtonSegment(value: 2, label: Text('2x')), ButtonSegment(value: 3, label: Text('3x')), ButtonSegment(value: 4, label: Text('4x'))],
-            selected: {scale},
-            showSelectedIcon: false,
-            onSelectionChanged: busy ? null : (v) => setState(() => scale = v.first),
-          )),
-          const SizedBox(height: 12),
+          const SizedBox(height: 28),
+          _section(context, 'Size', Segmented<int>(items: const [(2, '2x'), (3, '3x'), (4, '4x')], value: scale, onChanged: busy ? null : (v) => setState(() => scale = v))),
+          const SizedBox(height: 28),
           _section(context, 'Mode', Column(children: [for (final m in UpModel.values) _modeTile(context, m, busy)])),
-          const SizedBox(height: 12),
+          const SizedBox(height: 28),
           _section(context, 'Look', Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            SegmentedButton<bool>(
-              segments: const [ButtonSegment(value: true, label: Text('Natural')), ButtonSegment(value: false, label: Text('Sharp'))],
-              selected: {natural},
-              showSelectedIcon: false,
-              onSelectionChanged: busy ? null : (v) => setState(() => natural = v.first),
-            ),
+            Segmented<bool>(items: const [(true, 'Natural'), (false, 'Sharp')], value: natural, onChanged: busy ? null : (v) => setState(() => natural = v)),
             const SizedBox(height: 4),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
@@ -247,7 +237,7 @@ class _EditorScreenState extends State<EditorScreen> {
               onChanged: busy ? null : (v) => setState(() => grain = v),
             ),
             Row(children: [
-              Icon(Icons.auto_fix_high_rounded, size: 16, color: c.onSurfaceVariant),
+              Icon(Icons.info_outline, size: 16, color: c.onSurfaceVariant),
               const SizedBox(width: 8),
               Expanded(child: Text('Blocky JPEGs get cleaned up on their own.', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant))),
             ]),
@@ -279,7 +269,7 @@ class _EditorScreenState extends State<EditorScreen> {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Text('$est${ready[model] == true ? '' : ' after a one time ${(model.approxBytes / 1e6).round()} MB download'}', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
               ),
-            GradientButton(label: phase == Phase.error ? 'Retry' : 'Upscale ${scale}x', icon: phase == Phase.error ? Icons.refresh_rounded : Icons.auto_awesome_rounded, onPressed: _go),
+            SizedBox(width: double.infinity, child: FilledButton(onPressed: _go, child: Text(phase == Phase.error ? 'Try again' : 'Upscale ${scale}x'))),
           ]),
         ),
       ),
@@ -302,8 +292,8 @@ class _EditorScreenState extends State<EditorScreen> {
           tween: Tween(end: progress.clamp(0, 1)),
           duration: const Duration(milliseconds: 300),
           builder: (_, v, _) => Stack(children: [
-            Container(height: 10, color: c.surfaceContainerHighest),
-            FractionallySizedBox(widthFactor: v, child: Container(height: 10, decoration: const BoxDecoration(gradient: brandGradient))),
+            Container(height: 4, color: c.surfaceContainerHighest),
+            FractionallySizedBox(widthFactor: v, child: Container(height: 4, color: c.onSurface)),
           ]),
         ),
       ),
@@ -312,16 +302,10 @@ class _EditorScreenState extends State<EditorScreen> {
     ]);
   }
 
-  Widget _section(BuildContext context, String title, Widget child) => Card(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Text(title, style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-            const SizedBox(height: 10),
-            child,
-          ]),
-        ),
-      );
+  Widget _section(BuildContext context, String title, Widget child) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        SectionLabel(title),
+        child,
+      ]);
 
   Widget _modeTile(BuildContext context, UpModel m, bool busy) {
     final t = Theme.of(context).textTheme, c = Theme.of(context).colorScheme;
@@ -332,8 +316,7 @@ class _EditorScreenState extends State<EditorScreen> {
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: sel ? c.primary : c.outlineVariant.withValues(alpha: .5), width: sel ? 2 : 1),
-          color: sel ? c.primary.withValues(alpha: .08) : null,
+          border: Border.all(color: sel ? c.onSurface : c.outlineVariant, width: sel ? 1.5 : 1),
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
@@ -341,7 +324,7 @@ class _EditorScreenState extends State<EditorScreen> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children: [
-              Icon(switch (m) { UpModel.fast => Icons.bolt_rounded, UpModel.ultra => Icons.diamond_outlined, UpModel.art => Icons.brush_outlined }, color: sel ? c.primary : c.onSurfaceVariant),
+              Icon(switch (m) { UpModel.fast => Icons.bolt_outlined, UpModel.ultra => Icons.hd_outlined, UpModel.art => Icons.brush_outlined }, size: 22, color: sel ? c.onSurface : c.onSurfaceVariant),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -376,7 +359,7 @@ class _CompareSliderState extends State<CompareSlider> {
         onHorizontalDragUpdate: (d) => setState(() => x = (x + d.delta.dx / box.maxWidth).clamp(0.0, 1.0)),
         onTapDown: (d) => setState(() => x = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0)),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(16),
           child: Stack(fit: StackFit.expand, children: [
             ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest),
             InteractiveViewer(
@@ -393,17 +376,17 @@ class _CompareSliderState extends State<CompareSlider> {
               left: x * box.maxWidth - 1,
               top: 0,
               bottom: 0,
-              child: IgnorePointer(child: Container(width: 2, color: Colors.white)),
+              child: IgnorePointer(child: Container(width: 1.5, color: Colors.white)),
             ),
             Positioned(
-              left: x * box.maxWidth - 20,
-              top: box.maxHeight / 2 - 20,
+              left: x * box.maxWidth - 18,
+              top: box.maxHeight / 2 - 18,
               child: IgnorePointer(
                 child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .3), blurRadius: 10)]),
-                  child: const Icon(Icons.compare_arrows_rounded, color: brandA),
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, border: Border.all(color: Colors.black12)),
+                  child: const Icon(Icons.code, size: 20, color: Colors.black),
                 ),
               ),
             ),
@@ -431,7 +414,7 @@ class _Tag extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(color: Colors.black.withValues(alpha: .55), borderRadius: BorderRadius.circular(99)),
-        child: Text(text, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.white)),
+        decoration: BoxDecoration(color: Colors.black.withValues(alpha: .6), borderRadius: BorderRadius.circular(6)),
+        child: Text(text.toUpperCase(), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.white)),
       );
 }

@@ -18,7 +18,7 @@ No account, no ads, no watermark, no daily limits. Nothing gets uploaded. Once t
 |---|---|---|---|---|
 | <img src="docs/screenshots/01-home-dark.png" width="160"> | <img src="docs/screenshots/02-home-light.png" width="160"> | <img src="docs/screenshots/03-options.png" width="160"> | <img src="docs/screenshots/04-compare.png" width="160"> | <img src="docs/screenshots/05-compare-light.png" width="160"> |
 
-The screenshots are rendered from the real widgets with Flutter golden tests (`test/screenshots_test.dart`). The "after" image there is real output from the Fast model.
+The screenshots are rendered from the real widgets with Flutter golden tests (`test/screenshots_test.dart`). The "after" image there is real output from Fast mode.
 
 ## Features
 
@@ -32,26 +32,8 @@ The screenshots are rendered from the real widgets with Flutter golden tests (`t
 - **Clean saves.** Output is a plain PNG in Pictures/Pixelfixo with no metadata carried over.
 - **Share to Pixelfixo** from your gallery, browser or chat app.
 - **Dark and light themes,** or follow the system.
-- **Fully offline** after the first download of Ultra or Art.
-
-## Models
-
-| Mode | Model | Size | Download | Author | License |
-|---|---|---|---|---|---|
-| Fast | 4xLSDIRCompactC | 2.5 MB | Built in | [Philip Hofmann](https://github.com/Phhofm/models) | CC BY 4.0 |
-| Ultra | 4xNomosWebPhoto_RealPLKSR | 29.9 MB | On first use | [Philip Hofmann](https://github.com/Phhofm/models) | CC BY 4.0 |
-| Art | RealESRGAN_x4plus_anime_6B | 17.9 MB | On first use | [Xintao Wang et al.](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause |
-
-Ultra and Art come from this repo's [models-v1 release](https://github.com/Alokxyz1112/pixelfixo/releases/tag/models-v1) and are checked against a SHA-256 before they're used. All three were converted from the original weights to ONNX with no retraining.
-
-## Credits
-
-- **Philip Hofmann (Phhofm)** for 4xLSDIRCompactC and 4xNomosWebPhoto_RealPLKSR, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Converted to ONNX, weights unchanged.
-- **Real-ESRGAN** by Xintao Wang, Liangbin Xie, Chao Dong and Ying Shan, BSD 3-Clause.
-- **ONNX Runtime** by Microsoft, MIT.
-- Inter and Space Grotesk fonts, SIL OFL 1.1.
-
-Full details in [THIRD_PARTY.md](THIRD_PARTY.md).
+- **Fully offline** after a one time download for Ultra (about 30 MB) or Art (about 18 MB).
+- **Open source licenses** are listed in the app under the menu on the home screen.
 
 ## Build it yourself
 
@@ -71,4 +53,6 @@ To regenerate the logo and icons: `python tool/make_logo.py` (needs cairosvg and
 
 ## License
 
-The app code is MIT. The models keep their own licenses (see above).
+The app code is MIT.
+
+Uses open-source components; see [THIRD_PARTY.md](THIRD_PARTY.md) for licenses and credits.
