@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -37,6 +38,7 @@ class _EditorScreenState extends State<EditorScreen> {
   String? error;
   UpscaleResult? result;
   Uint8List? resultPng;
+  int outW = 0, outH = 0;
   Size? size;
   final Map<UpModel, bool> ready = {UpModel.fast: true};
   bool _cancel = false;
@@ -68,7 +70,7 @@ class _EditorScreenState extends State<EditorScreen> {
     buf.dispose();
   }
 
-  PostOptions get _post => PostOptions(natural: natural ? .25 : 0, grain: grain, vibrance: color ? .12 : 0);
+  PostOptions get _post => PostOptions(texture: natural ? .3 : .6, grain: grain, vibrance: color ? .12 : 0);
 
   Future<void> _go() async {
     _cancel = false;
@@ -93,6 +95,8 @@ class _EditorScreenState extends State<EditorScreen> {
       setState(() {
         result = r;
         resultPng = r.png;
+        outW = r.w;
+        outH = r.h;
         phase = Phase.done;
       });
     } on UpscaleCancelled {
@@ -172,7 +176,7 @@ class _EditorScreenState extends State<EditorScreen> {
       Expanded(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: CompareSlider(before: widget.source, after: resultPng!),
+          child: CompareSlider(before: widget.source, after: resultPng!, outW: outW, outH: outH),
         ),
       ),
       Padding(
@@ -220,7 +224,7 @@ class _EditorScreenState extends State<EditorScreen> {
           _section(context, 'Mode', Column(children: [for (final m in UpModel.values) _modeTile(context, m, busy)])),
           const SizedBox(height: 28),
           _section(context, 'Look', Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Segmented<bool>(items: const [(true, 'Natural'), (false, 'Sharp')], value: natural, onChanged: busy ? null : (v) => setState(() => natural = v)),
+            Segmented<bool>(items: const [(true, 'Natural'), (false, 'More texture')], value: natural, onChanged: busy ? null : (v) => setState(() => natural = v)),
             const SizedBox(height: 4),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
@@ -324,7 +328,7 @@ class _EditorScreenState extends State<EditorScreen> {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children: [
-              Icon(switch (m) { UpModel.fast => Icons.bolt_outlined, UpModel.ultra => Icons.hd_outlined, UpModel.art => Icons.brush_outlined }, size: 22, color: sel ? c.onSurface : c.onSurfaceVariant),
+              Icon(switch (m) { UpModel.fast => Icons.bolt_outlined, UpModel.high => Icons.high_quality_outlined, UpModel.ultra => Icons.hd_outlined, UpModel.art => Icons.brush_outlined }, size: 22, color: sel ? c.onSurface : c.onSurfaceVariant),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -341,59 +345,95 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 }
 
-/// Drag the handle to wipe between the original (left) and the upscaled result (right).
+/// Drag the round handle to wipe between the original (left) and the upscaled result (right).
+/// Pinch or double tap anywhere else to zoom; both sides follow the same zoom.
 class CompareSlider extends StatefulWidget {
   final Uint8List before, after;
   final double initial;
-  const CompareSlider({super.key, required this.before, required this.after, this.initial = .5});
+  final int outW, outH;
+  const CompareSlider({super.key, required this.before, required this.after, this.initial = .5, this.outW = 0, this.outH = 0});
   @override
   State<CompareSlider> createState() => _CompareSliderState();
 }
 
 class _CompareSliderState extends State<CompareSlider> {
   late double x = widget.initial;
+  bool peek = false;
+  final _tc = TransformationController();
+  Offset _tap = Offset.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _tc.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _tc.dispose();
+    super.dispose();
+  }
+
+  /// Zoom where one output pixel is one physical screen pixel.
+  double _fullScale(Size box) {
+    if (widget.outW <= 0 || widget.outH <= 0) return 4;
+    final fit = math.min(box.width / widget.outW, box.height / widget.outH);
+    return math.max(2.0, 1 / (fit * MediaQuery.of(context).devicePixelRatio));
+  }
+
+  void _doubleTap(Size box) {
+    if (_tc.value.getMaxScaleOnAxis() > 1.01) {
+      _tc.value = Matrix4.identity();
+      return;
+    }
+    final z = _fullScale(box);
+    _tc.value = Matrix4.identity()
+      ..translateByDouble(-_tap.dx * (z - 1), -_tap.dy * (z - 1), 0, 1)
+      ..scaleByDouble(z, z, z, 1);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, box) {
-      return GestureDetector(
-        onHorizontalDragUpdate: (d) => setState(() => x = (x + d.delta.dx / box.maxWidth).clamp(0.0, 1.0)),
-        onTapDown: (d) => setState(() => x = (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0)),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Stack(fit: StackFit.expand, children: [
-            ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest),
-            InteractiveViewer(
-              maxScale: 8,
-              child: Stack(fit: StackFit.expand, children: [
-                Image.memory(widget.after, fit: BoxFit.contain, gaplessPlayback: true, filterQuality: FilterQuality.medium),
-                ClipRect(
-                  clipper: _Left(x),
-                  child: Image.memory(widget.before, fit: BoxFit.contain, gaplessPlayback: true, filterQuality: FilterQuality.none),
-                ),
-              ]),
-            ),
-            Positioned(
-              left: x * box.maxWidth - 1,
-              top: 0,
-              bottom: 0,
-              child: IgnorePointer(child: Container(width: 1.5, color: Colors.white)),
-            ),
-            Positioned(
-              left: x * box.maxWidth - 18,
-              top: box.maxHeight / 2 - 18,
-              child: IgnorePointer(
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, border: Border.all(color: Colors.black12)),
-                  child: const Icon(Icons.code, size: 20, color: Colors.black),
-                ),
+    return LayoutBuilder(builder: (context, c) {
+      final w = c.maxWidth, box = Size(c.maxWidth, c.maxHeight);
+      Widget pic(Uint8List b, FilterQuality q) => Image.memory(b, fit: BoxFit.contain, width: w, height: c.maxHeight, filterQuality: q, gaplessPlayback: true);
+      final split = peek ? 1.0 : x;
+      final zoomed = _tc.value.getMaxScaleOnAxis() > 1.01;
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Stack(fit: StackFit.expand, children: [
+          ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest),
+          GestureDetector(
+            onDoubleTapDown: (d) => _tap = d.localPosition,
+            onDoubleTap: () => _doubleTap(box),
+            onLongPressStart: (_) => setState(() => peek = true),
+            onLongPressEnd: (_) => setState(() => peek = false),
+            child: InteractiveViewer(transformationController: _tc, maxScale: math.max(8.0, _fullScale(box) * 2), child: pic(widget.after, FilterQuality.medium)),
+          ),
+          // The original follows the same zoom and pan, cut at the divider in screen space, drawn pixel for pixel.
+          IgnorePointer(
+            child: ClipRect(clipper: _Left(split), child: Transform(transform: _tc.value, child: pic(widget.before, FilterQuality.none))),
+          ),
+          Positioned(left: split * w - 1, top: 0, bottom: 0, child: IgnorePointer(child: Container(width: 1.5, color: Colors.white))),
+          // Only the handle moves the divider, so the rest is free for zooming.
+          Positioned(
+            left: split * w - 22,
+            top: c.maxHeight / 2 - 22,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (d) => setState(() => x = ((x * w + d.delta.dx) / w).clamp(0.0, 1.0)),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, border: Border.all(color: Colors.black12)),
+                child: const Icon(Icons.code, size: 20, color: Colors.black),
               ),
             ),
-            const Positioned(left: 12, top: 12, child: _Tag('Before')),
-            const Positioned(right: 12, top: 12, child: _Tag('After')),
-          ]),
-        ),
+          ),
+          const Positioned(left: 12, top: 12, child: IgnorePointer(child: _Tag('Before'))),
+          const Positioned(right: 12, top: 12, child: IgnorePointer(child: _Tag('After'))),
+          Positioned(left: 0, right: 0, bottom: 12, child: IgnorePointer(child: Center(child: _Tag(zoomed ? 'Double tap to fit' : 'Pinch or double tap to zoom')))),
+        ]),
       );
     });
   }

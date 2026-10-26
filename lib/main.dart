@@ -11,7 +11,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   LicenseRegistry.addLicense(() async* {
     for (final (pkg, file) in [
-      ('4xLSDIRCompactC and 4xNomosWebPhoto_RealPLKSR (Philip Hofmann)', 'assets/models/LICENSE-CC-BY-4.0.txt'),
+      ('4xNomosWebPhoto_RealPLKSR (Philip Hofmann)', 'assets/models/LICENSE-CC-BY-4.0.txt'),
       ('Real-ESRGAN', 'assets/models/LICENSE-Real-ESRGAN.txt'),
       ('Inter font', 'assets/fonts/OFL-Inter.txt'),
       ('Space Grotesk font', 'assets/fonts/OFL-SpaceGrotesk.txt'),
@@ -185,8 +185,8 @@ class _Fact extends StatelessWidget {
 void showAbout(BuildContext context) => showLicensePage(
       context: context,
       applicationName: 'Pixelfixo',
-      applicationVersion: '1.0.1',
+      applicationVersion: '1.0.2',
       applicationIcon: Padding(padding: const EdgeInsets.all(12), child: ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.asset('assets/logo.png', width: 64))),
-      applicationLegalese: 'MIT license. Upscaling models: 4xLSDIRCompactC and 4xNomosWebPhoto_RealPLKSR by Philip Hofmann (CC BY 4.0), '
-          'Real-ESRGAN anime 6B by Xintao Wang et al. (BSD-3-Clause). Runs on ONNX Runtime (MIT).',
+      applicationLegalese: 'MIT license. Upscaling models: Real-ESRGAN general x4v3 and anime 6B by Xintao Wang et al. (BSD-3-Clause), '
+          '4xNomosWebPhoto_RealPLKSR by Philip Hofmann (CC BY 4.0). Runs on ONNX Runtime (MIT).',
     );

@@ -137,12 +137,14 @@ bool isSkin(double y, double cb, double cr) => y > 40 && cr >= 135 && cr <= 172 
 class PostOptions {
   final bool color; // pull tone and color back to the original's (fixes drift, whitening, orange shift)
   final double natural; // 0 = keep everything the model made, 0.25 = soften made-up detail by a quarter
+  final double texture; // share of the original's own fine detail (grain, pores, hair) added back, 0 = none
   final bool grain; // add back fine grain matched to the original's noise
   final double vibrance; // 0 = off, 0.12 = gentle color restore (skin is mostly left alone)
   final bool lowQuality; // heavily compressed JPEG: smooth blocky color more, never bring back source detail
   const PostOptions({
     this.color = true,
-    this.natural = 0.25,
+    this.natural = 0,
+    this.texture = 0.3,
     this.grain = false,
     this.vibrance = 0,
     this.lowQuality = false,
@@ -151,7 +153,7 @@ class PostOptions {
   /// Adjusts for the source: a badly compressed JPEG gets stronger color cleanup and no grain, since its own
   /// "texture" is mostly compression noise.
   PostOptions forSource(int? jpegQ) => (jpegQ != null && jpegQ < 70)
-      ? PostOptions(color: true, natural: natural, grain: false, vibrance: vibrance, lowQuality: true)
+      ? PostOptions(color: true, natural: natural, texture: texture, grain: false, vibrance: vibrance, lowQuality: true)
       : this;
 }
 
@@ -316,6 +318,52 @@ Uint8List postProcessBands(
     final r = postProcess((part, ow, ob - oa, src, w, b - a, scale, opt, y0 + 1));
     final from = (y0 - a) * scale * ow * 3, to = (math.min(oh, y1 * scale) - oa) * ow * 3;
     out.setRange(y0 * scale * ow * 3, y0 * scale * ow * 3 + (to - from), r, from);
+  }
+  return out;
+}
+
+/// Grain and color boost on a finished image (no source needed). [noise] is [sourceNoise] of the original.
+Uint8List touchUp(Uint8List o, int w, int h, double noise, PostOptions opt, {int seed = 1}) {
+  if (!opt.grain && opt.vibrance <= 0) return o;
+  final out = Uint8List.fromList(o);
+  final sigma = math.min(noise, 4.0) * 0.6;
+  final rnd = math.Random(seed);
+  const band = 64;
+  for (var y0 = 0; y0 < h; y0 += band) {
+    final bh = math.min(band, h - y0), n = w * bh;
+    Float32List? zb;
+    if (opt.grain && sigma > 0.2) {
+      final z = Float32List(n);
+      for (var i = 0; i < n; i++) {
+        z[i] = (rnd.nextDouble() + rnd.nextDouble() + rnd.nextDouble() - 1.5) * 2;
+      }
+      zb = blurPlane(z, w, bh, 1);
+    }
+    for (var i = 0; i < n; i++) {
+      final k = (y0 * w + i) * 3;
+      var r = out[k].toDouble(), g = out[k + 1].toDouble(), b = out[k + 2].toDouble();
+      if (opt.vibrance > 0) {
+        final y = 0.299 * r + 0.587 * g + 0.114 * b;
+        final cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        final cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+        final c = math.sqrt((cb - 128) * (cb - 128) + (cr - 128) * (cr - 128));
+        var f = opt.vibrance * (1 - math.min(c / 60, 1));
+        if (isSkin(y, cb, cr)) f *= 0.25;
+        final ncb = (cb - 128) * (1 + f), ncr = (cr - 128) * (1 + f);
+        r = y + 1.402 * ncr;
+        g = y - 0.344136 * ncb - 0.714136 * ncr;
+        b = y + 1.772 * ncb;
+      }
+      if (zb != null) {
+        final v = zb[i] * sigma * 2.2;
+        r += v;
+        g += v;
+        b += v;
+      }
+      out[k] = (r + .5).clamp(0, 255).toInt();
+      out[k + 1] = (g + .5).clamp(0, 255).toInt();
+      out[k + 2] = (b + .5).clamp(0, 255).toInt();
+    }
   }
   return out;
 }

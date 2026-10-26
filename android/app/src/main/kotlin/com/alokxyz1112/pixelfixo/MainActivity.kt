@@ -31,7 +31,11 @@ class MainActivity : FlutterActivity() {
                         val r = u.run(call.argument<String>("model")!!, call.argument<String>("input")!!,
                             call.argument<Int>("w")!!, call.argument<Int>("h")!!, call.argument<Int>("scale")!!,
                             call.argument<Int>("tile")!!, call.argument<Int>("pad")!!, call.argument<String>("output")!!,
-                            call.argument<List<String>>("backends")!!)
+                            call.argument<List<String>>("backends")!!,
+                            call.argument<Int>("outW") ?: (call.argument<Int>("w")!! * call.argument<Int>("scale")!!),
+                            call.argument<Int>("outH") ?: (call.argument<Int>("h")!! * call.argument<Int>("scale")!!),
+                            call.argument<Boolean>("post") ?: false, call.argument<Boolean>("lowQuality") ?: false,
+                            (call.argument<Double>("texture") ?: 0.0).toFloat())
                         runOnUiThread { result.success(r) }
                     } catch (e: InterruptedException) {
                         runOnUiThread { result.error("CANCELLED", "cancelled", null) }

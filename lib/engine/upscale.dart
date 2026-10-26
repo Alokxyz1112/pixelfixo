@@ -16,13 +16,17 @@ export 'upscale_post.dart' show PostOptions;
 /// Every model is a 4x model. 2x and 3x run the 4x model and shrink the result with a good filter, which looks
 /// sharper and cleaner than a separate small 2x net did in our tests.
 ///
-/// Fast and Ultra: models by Philip Hofmann (Phhofm), CC BY 4.0, https://github.com/Phhofm/models
+/// Fast and High: Real-ESRGAN realesr-general-x4v3 by Xintao Wang et al., BSD-3-Clause,
+/// https://github.com/xinntao/Real-ESRGAN. Fast mixes in more of the official denoise weights (cleaner), High less
+/// (keeps more real texture). The mix is the method the Real-ESRGAN authors ship for its denoise strength setting.
+/// Ultra: model by Philip Hofmann (Phhofm), CC BY 4.0, https://github.com/Phhofm/models
 /// Art: Real-ESRGAN anime 6B by Xintao Wang et al., BSD-3-Clause, https://github.com/xinntao/Real-ESRGAN
-/// The ONNX files are straight conversions of the official .pth weights (same numbers, see assets/models/README.md).
+/// The ONNX files are conversions of the official .pth weights (see assets/models/README.md).
 enum UpModel {
-  fast('Fast', '4xLSDIRCompactC', 'Quick and clean. Good on photos, handles JPEG blocks.', null, 0, '', 2.0, 256),
-  ultra('Ultra', '4xNomosWebPhoto_RealPLKSR', 'Most detail with real looking skin, hair and texture.',
-      '4xNomosWebPhoto_RealPLKSR.onnx', 29902622, '550ec2c879439e707717f6c8250b82908d19fa3ab4f75f26c1713f685c8ef371', 26.0, 192),
+  fast('Fast', 'realesr-general-x4v3-d50', 'Clean and sharp with real detail. Good on most photos.', null, 0, '', 8.0, 256),
+  high('High', 'realesr-general-x4v3-d30', 'Keeps more grain, skin and hair texture. Same speed as Fast.', null, 0, '', 8.0, 256),
+  ultra('Ultra', '4xNomosWebPhoto_RealPLKSR', 'Slowest. Strongest made up texture, can look painted.',
+      '4xNomosWebPhoto_RealPLKSR.onnx', 29902622, '550ec2c879439e707717f6c8250b82908d19fa3ab4f75f26c1713f685c8ef371', 70.0, 192),
   art('Art', 'RealESRGAN_x4plus_anime_6B', 'Drawings, anime and memes. Clean lines.', 'RealESRGAN_x4plus_anime_6B.onnx',
       17939941, 'd0c0ba25911cdc60151a1bdb33b4cc3d7beb86317b6d1540a290d78e0a0d8255', 15.0, 192);
 
@@ -128,8 +132,12 @@ class UpscaleResult {
   UpscaleResult(this.png, this.w, this.h, this.srcW, this.srcH, this.shrunk);
 }
 
-/// Largest output we build, in pixels (about 64 MB of RGB while working).
-const maxOutPixels = 20000000;
+/// Largest output we build, in pixels (about 72 MB of RGB). Bigger requests come out at the largest scale that fits,
+/// but the model still sees every pixel of the original.
+const maxOutPixels = 24000000;
+
+/// Largest input we read, in pixels. Only giant photos get shrunk before the model.
+const maxInPixels = 24000000;
 
 /// Decoded RGB pixels. Only plain data, so it can cross isolates.
 class DecodedImage {
@@ -143,8 +151,7 @@ DecodedImage decodeForUpscale((Uint8List, int) a) {
   var im = img.decodeImage(a.$1);
   if (im == null) throw Exception('Could not read this image');
   final ow = im.width, oh = im.height;
-  // The 4x intermediate (16x the pixels) has to stay under maxOutPixels.
-  final maxIn = maxOutPixels / 16;
+  const maxIn = maxInPixels;
   if (ow * oh > maxIn) {
     final f = math.sqrt(maxIn / (ow * oh));
     im = img.copyResize(im, width: (ow * f).floor(), height: (oh * f).floor(), interpolation: img.Interpolation.average);
@@ -242,7 +249,10 @@ class Upscaler {
   }
 
   /// Runs the model over the whole RGB image in native code (NNAPI fp16, then XNNPACK, then CPU).
-  static Future<Uint8List> _native(DecodedImage d, UpModel m, void Function(double)? progress, bool Function()? cancelled) async {
+  static Future<Uint8List> _native(DecodedImage d, UpModel m, void Function(double)? progress, bool Function()? cancelled,
+      {int? outW, int? outH, PostOptions? post}) async {
+    outW ??= d.w * 4;
+    outH ??= d.h * 4;
     if (!_hooked) {
       _hooked = true;
       _ch.setMethodCallHandler((c) async {
@@ -271,7 +281,13 @@ class Upscaler {
         'scale': 4,
         'tile': m.tile,
         'pad': 16,
-        'backends': ['nnapi', 'xnnpack', 'cpu'],
+        // The big Ultra net is mostly ops NNAPI can't take whole, and a split graph was slower than XNNPACK alone.
+        'backends': m == UpModel.ultra ? ['xnnpack', 'cpu'] : ['nnapi', 'xnnpack', 'cpu'],
+        'outW': outW,
+        'outH': outH,
+        'post': post != null,
+        'lowQuality': post?.lowQuality ?? false,
+        'texture': post?.texture ?? 0.0,
       });
       lastBackend = r?['backend'] as String?;
       measuredSecPerMp[m] = sw.elapsedMilliseconds / 1000 / (d.w * d.h / 1e6);
@@ -294,18 +310,23 @@ class Upscaler {
     if (scale < 2 || scale > 4) throw ArgumentError.value(scale, 'scale');
     final opt = post.forSource(jpegQuality(bytes));
     final d = await compute(decodeForUpscale, (bytes, scale));
-    Uint8List rgb4;
+    // The model always runs on the full resolution input. Only the output size is capped.
+    final (outW, outH) = outputSize(d.w, d.h, scale);
     try {
-      rgb4 = await _native(d, m, progress, cancelled);
+      final out = await _native(d, m, progress, cancelled, outW: outW, outH: outH, post: opt);
+      final png = await compute(finishNative, (out, outW, outH, sourceNoise(d.rgb, d.w, d.h), opt));
+      return UpscaleResult(png, outW, outH, d.ow, d.oh, d.w != d.ow || outW < d.w * scale);
     } catch (e) {
-      // Not on Android (tests, desktop), or the native engine failed on this
-      // phone: the plugin path, slower but same result.
+      if (e is UpscaleCancelled) rethrow;
+      // Not on Android (tests, desktop), or the native engine failed on this phone: the plugin path, slower, and
+      // big photos get shrunk first since the whole 4x result is kept in memory here.
       if (e is! MissingPluginException && e is! PlatformException) rethrow;
-      final ses = await _session(m);
-      rgb4 = await upscaleRgb(d.rgb, d.w, d.h, (x, s) => _runPlugin(ses, x, s),
-          size: 128, pad: 16, progress: (a, b) => progress?.call(a / b), cancelled: cancelled);
     }
-    return finishPipeline(d, rgb4, scale, opt, m.name);
+    final small = await compute(shrinkForFallback, d);
+    final ses = await _session(m);
+    final rgb4 = await upscaleRgb(small.rgb, small.w, small.h, (x, s) => _runPlugin(ses, x, s),
+        size: 128, pad: 16, progress: (a, b) => progress?.call(a / b), cancelled: cancelled);
+    return finishPipeline(small, rgb4, scale, opt, m.name);
   }
 
   static Future<List<num>> _runPlugin(OrtSession ses, Float32List x, int s) async {
@@ -320,6 +341,31 @@ class Upscaler {
       await input.dispose();
     }
   }
+}
+
+/// Output size for a [scale]x upscale of w*h: the full scale when it fits under [maxOutPixels], else the largest
+/// scale that does (the model still runs at 4x on the full input, each tile is then averaged down).
+(int, int) outputSize(int w, int h, int scale) {
+  final f = math.min(scale.toDouble(), math.sqrt(maxOutPixels / (w * h)));
+  return (math.max(1, (w * f).floor()), math.max(1, (h * f).floor()));
+}
+
+/// Isolate entry: the Dart fallback keeps the whole 4x image in memory, so it shrinks big inputs like before.
+DecodedImage shrinkForFallback(DecodedImage d) {
+  final maxIn = maxOutPixels / 16;
+  if (d.w * d.h <= maxIn) return d;
+  final f = math.sqrt(maxIn / (d.w * d.h));
+  final im = img.copyResize(img.Image.fromBytes(width: d.w, height: d.h, bytes: d.rgb.buffer, numChannels: 3, order: img.ChannelOrder.rgb),
+      width: (d.w * f).floor(), height: (d.h * f).floor(), interpolation: img.Interpolation.average);
+  return DecodedImage(Uint8List.fromList(im.getBytes(order: img.ChannelOrder.rgb)), im.width, im.height, d.ow, d.oh);
+}
+
+/// Isolate entry: native output (already color anchored, textured and at final size) -> optional grain and color
+/// boost -> PNG.
+Uint8List finishNative((Uint8List, int, int, double, PostOptions) a) {
+  final (rgb, w, h, noise, opt) = a;
+  final o = touchUp(rgb, w, h, noise, opt);
+  return img.encodePng(img.Image.fromBytes(width: w, height: h, bytes: o.buffer, numChannels: 3, order: img.ChannelOrder.rgb), level: 6);
 }
 
 /// Isolate entry (top level, plain data only): raw 4x RGB -> color, natural and grain fixes -> target size -> PNG.
