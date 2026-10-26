@@ -24,9 +24,9 @@ export 'upscale_post.dart' show PostOptions;
 /// Art: Real-ESRGAN anime 6B by Xintao Wang et al., BSD-3-Clause, https://github.com/xinntao/Real-ESRGAN
 /// The ONNX files are conversions of the official .pth weights (see assets/models/README.md).
 enum UpModel {
-  fast('Fast', 'realesr-general-x4v3-d40', 'Clean and sharp with real detail. Good on most photos.', null, 0, '', 8.0, 256),
+  fast('Fast', 'realesr-general-x4v3-d40', 'Clean and sharp with more real skin texture. Good on most photos.', null, 0, '', 8.0, 256),
   high('High', 'realesr-general-x4v3-d30', 'Keeps more grain, skin and hair texture. Same speed as Fast.', null, 0, '', 8.0, 256),
-  ultra('Ultra', '4xNomosWebPhoto_RealPLKSR', 'Slowest. Strongest made up texture, can look painted.',
+  ultra('Ultra', '4xNomosWebPhoto_RealPLKSR', 'Slowest. Most detail, with natural faces.',
       '4xNomosWebPhoto_RealPLKSR.onnx', 29902622, '550ec2c879439e707717f6c8250b82908d19fa3ab4f75f26c1713f685c8ef371', 70.0, 192),
   art('Art', 'RealESRGAN_x4plus_anime_6B', 'Drawings, anime and memes. Clean lines.', 'RealESRGAN_x4plus_anime_6B.onnx',
       17939941, 'd0c0ba25911cdc60151a1bdb33b4cc3d7beb86317b6d1540a290d78e0a0d8255', 15.0, 192);
