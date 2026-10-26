@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 4xLSDIRCompactC.onnx | Philip Hofmann (Phhofm), https://github.com/Phhofm/models | CC BY 4.0 | Converted from the official .pth to ONNX. Weights unchanged. |
 | 4xNomosWebPhoto_RealPLKSR.onnx | Philip Hofmann (Phhofm), https://github.com/Phhofm/models | CC BY 4.0 | Converted from the official .pth to ONNX. Weights unchanged. |
-| realesr-general-x4v3-d40.onnx, realesr-general-x4v3-d30.onnx | Xintao Wang et al., https://github.com/xinntao/Real-ESRGAN | BSD 3-Clause | The official realesr-general-x4v3 and wdn-x4v3 weights mixed per parameter (40/60 and 30/70) and converted to ONNX. |
+| realesr-general-x4v3-d50.onnx, realesr-general-x4v3-d30.onnx | Xintao Wang et al., https://github.com/xinntao/Real-ESRGAN | BSD 3-Clause | The official realesr-general-x4v3 and wdn-x4v3 weights mixed per parameter (50/50 and 30/70) and converted to ONNX. |
 | RealESRGAN_x4plus_anime_6B.onnx | Xintao Wang et al., https://github.com/xinntao/Real-ESRGAN | BSD 3-Clause | Converted to ONNX. Weights unchanged. |
 
 Full texts: [assets/models/LICENSE-CC-BY-4.0.txt](assets/models/LICENSE-CC-BY-4.0.txt) and [assets/models/LICENSE-Real-ESRGAN.txt](assets/models/LICENSE-Real-ESRGAN.txt).
