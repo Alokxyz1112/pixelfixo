@@ -8,6 +8,7 @@ import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+import 'jpeg_restore.dart';
 import 'upscale_post.dart';
 export 'upscale_post.dart' show PostOptions;
 
@@ -147,9 +148,14 @@ class DecodedImage {
 }
 
 /// Isolate entry (top level, plain data in and out): encoded bytes -> RGB, shrunk if huge.
-DecodedImage decodeForUpscale((Uint8List, int) a) {
-  var im = img.decodeImage(a.$1);
+DecodedImage decodeForUpscale((Uint8List, bool) a) {
+  // JPEG with cleanup on: constrained decode straight from the file's own DCT data (fewer blocks, colour that
+  // follows edges). Anything else, or a JPEG it can't handle: the normal decoder, then the EXIF rotation.
+  final r = a.$2 ? restoreJpeg(a.$1) : null;
+  var im = r != null ? restoredImage(r) : img.decodeImage(a.$1);
   if (im == null) throw Exception('Could not read this image');
+  final o = im.exif.imageIfd.orientation;
+  if (r == null && o != null && o != 1) im = img.bakeOrientation(im);
   final ow = im.width, oh = im.height;
   const maxIn = maxInPixels;
   if (ow * oh > maxIn) {
@@ -309,7 +315,7 @@ class Upscaler {
       {PostOptions post = const PostOptions(), void Function(double)? progress, bool Function()? cancelled}) async {
     if (scale < 2 || scale > 4) throw ArgumentError.value(scale, 'scale');
     final opt = post.forSource(jpegQuality(bytes));
-    final d = await compute(decodeForUpscale, (bytes, scale));
+    final d = await compute(decodeForUpscale, (bytes, opt.cleanup));
     // The model always runs on the full resolution input. Only the output size is capped.
     final (outW, outH) = outputSize(d.w, d.h, scale);
     try {
@@ -391,7 +397,7 @@ Future<UpscaleResult> finishPipeline(DecodedImage d, Uint8List rgb4, int scale, 
 Future<UpscaleResult> upscalePipeline(Uint8List bytes, int scale, Future<List<num>> Function(Float32List, int s) model,
     {int tile = 128, PostOptions post = const PostOptions(), void Function(double)? progress, bool Function()? cancelled, String label = ''}) async {
   if (scale < 2 || scale > 4) throw ArgumentError.value(scale, 'scale');
-  final d = await compute(decodeForUpscale, (bytes, scale));
+  final d = await compute(decodeForUpscale, (bytes, post.cleanup));
   final rgb4 = await upscaleRgb(d.rgb, d.w, d.h, model,
       size: tile, pad: 16, progress: (a, b) => progress?.call(a / b), cancelled: cancelled);
   return finishPipeline(d, rgb4, scale, post.forSource(jpegQuality(bytes)), label);

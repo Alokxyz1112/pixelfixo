@@ -23,7 +23,7 @@ Uint8List tinyJpeg() => img.encodeJpg(img.Image(width: 20, height: 14)..clear(im
 void main() {
   test('isolate entries run through Isolate.run with plain data only', () async {
     final bytes = tinyJpeg();
-    final d = await Isolate.run(() => decodeForUpscale((bytes, 3)));
+    final d = await Isolate.run(() => decodeForUpscale((bytes, true)));
     expect([d.w, d.h], [20, 14]);
     final rgb4 = Uint8List(d.w * 4 * d.h * 4 * 3);
     final png = await Isolate.run(() => finishUpscale((rgb4, d.w * 4, d.h * 4, d.w * 3, d.h * 3)));

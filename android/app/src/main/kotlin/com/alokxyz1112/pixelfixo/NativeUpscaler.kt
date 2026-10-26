@@ -161,7 +161,11 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         val bcr = blur(dcr, s, if (lowQuality) 2 else 1)
         val tex = if (lowQuality) texture * 0.4f else texture
         val hf = FloatArray(n)
-        if (tex > 0f) { val lb = blur(luma, s, 1); for (j in 0 until n) hf[j] = (luma[j] - lb[j]) * tex }
+        if (tex > 0f) { val lb = blur(luma, s, 1); for (j in 0 until n) {
+            // Coring: drop tiny ripples (JPEG noise and block edges), keep real detail.
+            val d = luma[j] - lb[j]; val m = Math.abs(d) - CORE
+            hf[j] = if (m > 0f) Math.copySign(m, d) * tex else 0f
+        } }
         for (y in 0 until so) {
             val fy = ((y + .5f) / scale - .5f).coerceIn(0f, s - 1f)
             val y0 = fy.toInt(); val y1 = minOf(y0 + 1, s - 1); val ty = fy - y0
@@ -180,6 +184,8 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
             }
         }
     }
+
+    private val CORE = 2f / 255f
 
     /** Box blur run twice (close to a Gaussian), edges repeat. */
     private fun blur(a: FloatArray, s: Int, r: Int): FloatArray {

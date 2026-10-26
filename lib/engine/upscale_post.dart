@@ -140,6 +140,7 @@ class PostOptions {
   final double texture; // share of the original's own fine detail (grain, pores, hair) added back, 0 = none
   final bool grain; // add back fine grain matched to the original's noise
   final double vibrance; // 0 = off, 0.12 = gentle color restore (skin is mostly left alone)
+  final bool cleanup; // JPEG: decode with compression cleanup (fewer blocks, colour that follows edges)
   final bool lowQuality; // heavily compressed JPEG: smooth blocky color more, never bring back source detail
   const PostOptions({
     this.color = true,
@@ -148,12 +149,13 @@ class PostOptions {
     this.grain = false,
     this.vibrance = 0,
     this.lowQuality = false,
+    this.cleanup = true,
   });
 
   /// Adjusts for the source: a badly compressed JPEG gets stronger color cleanup and no grain, since its own
   /// "texture" is mostly compression noise.
   PostOptions forSource(int? jpegQ) => (jpegQ != null && jpegQ < 70)
-      ? PostOptions(color: true, natural: natural, texture: texture, grain: false, vibrance: vibrance, lowQuality: true)
+      ? PostOptions(color: true, natural: natural, texture: texture, grain: false, vibrance: vibrance, lowQuality: true, cleanup: cleanup)
       : this;
 }
 

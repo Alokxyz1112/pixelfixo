@@ -32,7 +32,7 @@ class _EditorScreenState extends State<EditorScreen> {
   static const _media = MethodChannel('pixelfixo/media');
   int scale = 4;
   UpModel model = UpModel.fast;
-  bool natural = true, color = false, grain = false;
+  bool natural = true, color = false, grain = false, cleanup = true;
   Phase phase = Phase.setup;
   double progress = 0;
   String? error;
@@ -70,7 +70,7 @@ class _EditorScreenState extends State<EditorScreen> {
     buf.dispose();
   }
 
-  PostOptions get _post => PostOptions(texture: natural ? .3 : .6, grain: grain, vibrance: color ? .12 : 0);
+  PostOptions get _post => PostOptions(texture: natural ? .3 : .6, grain: grain, vibrance: color ? .12 : 0, cleanup: cleanup);
 
   Future<void> _go() async {
     _cancel = false;
@@ -240,11 +240,13 @@ class _EditorScreenState extends State<EditorScreen> {
               value: grain,
               onChanged: busy ? null : (v) => setState(() => grain = v),
             ),
-            Row(children: [
-              Icon(Icons.info_outline, size: 16, color: c.onSurfaceVariant),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Blocky JPEGs get cleaned up on their own.', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant))),
-            ]),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Clean up JPEG compression'),
+              subtitle: const Text('Removes blocks and color smears before upscaling'),
+              value: cleanup,
+              onChanged: busy ? null : (v) => setState(() => cleanup = v),
+            ),
           ])),
           if (phase == Phase.error) ...[
             const SizedBox(height: 12),
