@@ -47,7 +47,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
     fun run(model: String, inPath: String, w: Int, h: Int, scale: Int, tile: Int, pad: Int, outPath: String,
             backends: List<String>, outW: Int = w * scale, outH: Int = h * scale, post: Boolean = false,
             lowQuality: Boolean = false, texture: Float = 0f, skin: Int = 0): Map<String, Any> {
-        cancel.set(false)
+        cancel.set(false); skinOk = true
         val rgb = File(inPath).readBytes()
         val out = ByteArray(outW * outH * 3)
         val fx = outW.toDouble() / w; val fy = outH.toDouble() / h // output pixels per input pixel
@@ -96,7 +96,11 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                 name = queue.removeFirst(); checked = false
                 continue // same tile again on the next backend
             }
-            if (post) finishTile(res, arr, s, scale, lowQuality, texture, skin)
+            if (post) {
+                // Post processing must never take the whole upscale down. It only adds small corrections to the
+                // model tile, so if it fails part way the tile is still a valid image.
+                try { finishTile(res, arr, s, scale, lowQuality, texture, skin) } catch (e: Throwable) { skinOk = false }
+            }
             writeTile(res, s, scale, pad, t, out, w, h, outW, outH, fx, fy)
             i++
             progress(i, tiles.size, name)
@@ -162,7 +166,8 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         val tex = if (lowQuality) texture * 0.4f else texture
         val hf = FloatArray(n)
         // Skin zones (any skin tone, from the input's own chroma): get a bit more of the real texture back.
-        val sw = if (skin > 0) skinWeight(inp, s) else null
+        // The skin pass is a nice to have: if it ever fails (memory, a bad tile), the tile is finished without it.
+        val sw = if (skin > 0 && skinOk) try { skinWeight(inp, s) } catch (e: Throwable) { skinOk = false; null } else null
         if (tex > 0f) { val lb = blur(luma, s, 1); for (j in 0 until n) {
             // Coring: drop tiny ripples (JPEG noise and block edges), keep real detail.
             val d = luma[j] - lb[j]; val m = Math.abs(d) - CORE
@@ -186,7 +191,10 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                 res[2 * po + k] += ly + 1.772f * lcb
             }
         }
-        if (skin >= 2 && sw != null) softenSkinEdges(res, luma, sw, s, scale)
+        if (skin >= 2 && sw != null && skinOk) {
+            // Edits are only applied in the last loop, so a failure part way leaves a normal finished tile.
+            try { softenSkinEdges(res, luma, sw, s, scale) } catch (e: Throwable) { skinOk = false }
+        }
     }
 
     /** Soft 0..1 skin weight per input pixel. BT.601 8-bit Cb 80..125, Cr 133..173 with a Gaussian falloff
@@ -238,6 +246,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         }
     }
 
+    @Volatile private var skinOk = true
     private val SKIN_BOOST = 0.25f // 1.25x texture on skin
     private val EDGE_BLEND = 0.15f
     private val EDGE_LO = 0.015f; private val EDGE_HI = 0.05f

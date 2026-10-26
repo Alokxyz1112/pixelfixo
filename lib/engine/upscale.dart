@@ -329,12 +329,22 @@ class Upscaler {
       // Not on Android (tests, desktop), or the native engine failed on this phone: the plugin path, slower, and
       // big photos get shrunk first since the whole 4x result is kept in memory here.
       if (e is! MissingPluginException && e is! PlatformException) rethrow;
+      // Out of memory in native code: the plugin path would need even more, so stop here with a clear message.
+      if (e is PlatformException && '${e.message}'.contains('OutOfMemory')) {
+        throw Exception('Not enough memory for this photo at this size. Try 2x or a smaller photo.');
+      }
     }
-    final small = await compute(shrinkForFallback, d);
-    final ses = await _session(m);
-    final rgb4 = await upscaleRgb(small.rgb, small.w, small.h, (x, s) => _runPlugin(ses, x, s),
-        size: 128, pad: 16, progress: (a, b) => progress?.call(a / b), cancelled: cancelled);
-    return finishPipeline(small, rgb4, scale, opt, m.name);
+    try {
+      final small = await compute(shrinkForFallback, d);
+      final ses = await _session(m);
+      final rgb4 = await upscaleRgb(small.rgb, small.w, small.h, (x, s) => _runPlugin(ses, x, s),
+          size: 128, pad: 16, progress: (a, b) => progress?.call(a / b), cancelled: cancelled);
+      return await finishPipeline(small, rgb4, scale, opt, m.name);
+    } on UpscaleCancelled {
+      rethrow;
+    } catch (e) {
+      throw Exception('Upscale failed on this phone ($e)');
+    }
   }
 
   static Future<List<num>> _runPlugin(OrtSession ses, Float32List x, int s) async {
