@@ -35,7 +35,7 @@ class MainActivity : FlutterActivity() {
                             call.argument<Int>("outW") ?: (call.argument<Int>("w")!! * call.argument<Int>("scale")!!),
                             call.argument<Int>("outH") ?: (call.argument<Int>("h")!! * call.argument<Int>("scale")!!),
                             call.argument<Boolean>("post") ?: false, call.argument<Boolean>("lowQuality") ?: false,
-                            (call.argument<Double>("texture") ?: 0.0).toFloat())
+                            (call.argument<Double>("texture") ?: 0.0).toFloat(), call.argument<Int>("skin") ?: 0)
                         runOnUiThread { result.success(r) }
                     } catch (e: InterruptedException) {
                         runOnUiThread { result.error("CANCELLED", "cancelled", null) }

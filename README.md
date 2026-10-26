@@ -22,7 +22,7 @@ The screenshots are rendered from the real widgets with Flutter golden tests (`t
 
 ## Features
 
-- **Three modes.** Fast for everyday photos, Ultra for the most detail, Art for drawings, anime and memes.
+- **Three modes.** Fast for everyday photos with real skin texture, Ultra for the most detail with natural looking faces, Art for drawings, anime and memes.
 - **2x, 3x, 4x.**
 - **Natural or Sharp look.** Natural keeps skin and textures soft and believable. Sharp pushes edges harder.
 - **Restore color.** Keeps the colors and skin tones of your original instead of letting them drift.
