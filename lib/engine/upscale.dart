@@ -250,20 +250,11 @@ class Upscaler {
   static Future<OrtSession> _session(UpModel m) async {
     final s = _sessions[m];
     if (s != null) return s;
-    // XNNPACK is the fast ARM CPU path; plain CPU is the fallback. NNAPI is skipped on purpose: these nets use ops it
-    // handles badly and it was slower than XNNPACK in ONNX Runtime's own numbers for conv heavy models.
-    final opts = OrtSessionOptions(providers: [OrtProvider.XNNPACK, OrtProvider.CPU], intraOpNumThreads: math.min(8, Platform.numberOfProcessors));
-    OrtSession ses;
-    try {
-      ses = m.bundled
-          ? await _ort.createSessionFromAsset('assets/models/${m.name}.onnx', options: opts)
-          : await _ort.createSession((await _file(m)).path, options: opts);
-    } catch (_) {
-      final cpu = OrtSessionOptions(providers: [OrtProvider.CPU], intraOpNumThreads: math.min(8, Platform.numberOfProcessors));
-      ses = m.bundled
-          ? await _ort.createSessionFromAsset('assets/models/${m.name}.onnx', options: cpu)
-          : await _ort.createSession((await _file(m)).path, options: cpu);
-    }
+    // CPU only. XNNPACK lives in the native :upscale process. Loading it here would put a SIGSEGV in the UI process.
+    final opts = OrtSessionOptions(providers: [OrtProvider.CPU], intraOpNumThreads: math.min(4, Platform.numberOfProcessors));
+    final ses = m.bundled
+        ? await _ort.createSessionFromAsset('assets/models/${m.name}.onnx', options: opts)
+        : await _ort.createSession((await _file(m)).path, options: opts);
     return _sessions[m] = ses;
   }
 
@@ -286,7 +277,7 @@ class Upscaler {
     return f.path;
   }
 
-  /// Runs the model over the whole RGB image in native code (NNAPI fp16, then XNNPACK, then CPU).
+  /// Runs the model over the whole RGB image in native code (XNNPACK, then CPU) in a separate process.
   static Future<Uint8List> _native(DecodedImage d, UpModel m, void Function(double)? progress, bool Function()? cancelled,
       {int? outW, int? outH, PostOptions? post, bool faces = false}) async {
     outW ??= d.w * 4;

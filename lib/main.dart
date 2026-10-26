@@ -207,7 +207,7 @@ class _Fact extends StatelessWidget {
 void showAbout(BuildContext context) => showLicensePage(
       context: context,
       applicationName: 'Pixelfixo',
-      applicationVersion: '1.0.5',
+      applicationVersion: '1.0.6',
       applicationIcon: Padding(padding: const EdgeInsets.all(12), child: ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.asset('assets/logo.png', width: 64))),
       applicationLegalese: 'MIT license. Upscaling models: Real-ESRGAN general x4v3 and anime 6B by Xintao Wang et al. (BSD-3-Clause), '
           '4xNomosWebPhoto_RealPLKSR by Philip Hofmann (CC BY 4.0). Runs on ONNX Runtime (MIT).',

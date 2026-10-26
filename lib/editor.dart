@@ -177,7 +177,7 @@ class _EditorScreenState extends State<EditorScreen> {
   String? get _eta {
     if (phase != Phase.running) return null;
     if (progress >= 1) return 'Finishing up';
-    if (progress < .05 || _watch.elapsedMilliseconds < 1500) return 'Getting started';
+    if (progress < .05 || _watch.elapsedMilliseconds < 1500) return 'Loading the model';
     final left = _watch.elapsedMilliseconds / 1000 * (1 - progress) / progress;
     return '${estimateText(left)} left';
   }

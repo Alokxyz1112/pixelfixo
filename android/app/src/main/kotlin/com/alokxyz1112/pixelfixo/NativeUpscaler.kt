@@ -28,30 +28,28 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
 
     private fun open(model: String, backend: String, s: Int): OrtSession {
         val o = OrtSession.SessionOptions()
-        try {
-            val cores = Runtime.getRuntime().availableProcessors()
-            // Phones have 4 or fewer fast cores. More threads than that make every tile wait on the slow cores.
-            val threads = cores.coerceIn(1, 4)
-            for (d in listOf("h", "w", "height", "width")) {
-                try { o.setSymbolicDimensionValue(d, s.toLong()) } catch (_: Throwable) {}
-            }
-            for (d in listOf("batch_size", "batch")) {
-                try { o.setSymbolicDimensionValue(d, 1L) } catch (_: Throwable) {}
-            }
-            o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            o.setInterOpNumThreads(1)
-            when (backend) {
-                "xnnpack" -> {
-                    o.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
-                    o.setIntraOpNumThreads(1)
-                }
-                else -> o.setIntraOpNumThreads(threads)
-            }
-            Log.i(TAG, "loading $backend tile $s")
-            return env.createSession(model, o)
-        } finally {
-            try { o.close() } catch (_: Throwable) {}
+        val cores = Runtime.getRuntime().availableProcessors()
+        // Phones have 4 or fewer fast cores. More threads than that make every tile wait on the slow cores.
+        val threads = cores.coerceIn(1, 4)
+        for (d in listOf("h", "w", "height", "width")) {
+            try { o.setSymbolicDimensionValue(d, s.toLong()) } catch (_: Throwable) {}
         }
+        for (d in listOf("batch_size", "batch")) {
+            try { o.setSymbolicDimensionValue(d, 1L) } catch (_: Throwable) {}
+        }
+        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        o.setInterOpNumThreads(1)
+        when (backend) {
+            "xnnpack" -> {
+                o.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                o.setIntraOpNumThreads(1)
+            }
+            else -> o.setIntraOpNumThreads(threads)
+        }
+        Log.i(TAG, "loading $backend tile $s")
+        // Do not close SessionOptions after createSession. ORT 1.28 on some phones SIGSEGVs in close(),
+        // which killed the app after a few seconds of "loading" with the bar still at 0%.
+        return env.createSession(model, o)
     }
 
     /** Keeps the last good session so a second run with the same model does not reload it. */
@@ -82,9 +80,16 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         return synchronized(gate) {
         cancel.set(false)
         skinOk = true
+        report(0, 1, "load")
         val rgb = File(inPath).readBytes()
         if (w < 1 || h < 1 || rgb.size < w * h * 3) throw IllegalArgumentException("bad input")
-        val out = ByteArray(outW * outH * 3)
+        val pixels = outW.toLong() * outH.toLong() * 3L
+        if (pixels <= 0L || pixels > Int.MAX_VALUE) throw IllegalArgumentException("bad output size")
+        val out = try {
+            ByteArray(pixels.toInt())
+        } catch (e: OutOfMemoryError) {
+            throw IllegalStateException("OutOfMemory: not enough memory for this photo at this size. Try 2x or a smaller photo.")
+        }
         var core = safeCore(tile, w, h)
         var attempt = 0
         var result: Map<String, Any>? = null
@@ -125,6 +130,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         val queue = ArrayDeque(if (allowed.isEmpty()) listOf("xnnpack", "cpu") else allowed)
         var name = queue.removeFirst()
         var ses: OrtSession? = null
+        report(0, maxOf(1, tiles.size), name)
         val t0 = System.nanoTime()
         val input = FloatBuffer.allocate(3 * s * s)
         val plane = s * s

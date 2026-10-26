@@ -14,7 +14,6 @@ import java.io.File
 import java.io.FileInputStream
 
 class MainActivity : FlutterActivity() {
-    private var upscaler: NativeUpscaler? = null
     private var shareCh: MethodChannel? = null
     private var pendingShare: String? = null
 
@@ -23,25 +22,35 @@ class MainActivity : FlutterActivity() {
         val up = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "pixelfixo/upscale")
         up.setMethodCallHandler { call, result ->
             when (call.method) {
-                "cancel" -> { upscaler?.cancel?.set(true); result.success(true) }
+                "cancel" -> { UpscaleClient.cancel(); result.success(true) }
                 "run" -> Thread {
                     try {
-                        val u = NativeUpscaler { d, t, b -> runOnUiThread { up.invokeMethod("progress", mapOf("done" to d, "total" to t, "backend" to b)) } }
-                        upscaler = u
-                        val r = u.run(call.argument<String>("model")!!, call.argument<String>("input")!!,
-                            call.argument<Int>("w")!!, call.argument<Int>("h")!!, call.argument<Int>("scale")!!,
-                            call.argument<Int>("tile")!!, call.argument<Int>("pad")!!, call.argument<String>("output")!!,
-                            call.argument<List<String>>("backends")!!,
-                            call.argument<Int>("outW") ?: (call.argument<Int>("w")!! * call.argument<Int>("scale")!!),
-                            call.argument<Int>("outH") ?: (call.argument<Int>("h")!! * call.argument<Int>("scale")!!),
-                            call.argument<Boolean>("post") ?: false, call.argument<Boolean>("lowQuality") ?: false,
-                            (call.argument<Double>("texture") ?: 0.0).toFloat(), call.argument<Int>("skin") ?: 0)
+                        val args = android.os.Bundle().apply {
+                            putString("model", call.argument<String>("model"))
+                            putString("input", call.argument<String>("input"))
+                            putString("output", call.argument<String>("output"))
+                            putInt("w", call.argument<Int>("w")!!)
+                            putInt("h", call.argument<Int>("h")!!)
+                            putInt("scale", call.argument<Int>("scale")!!)
+                            putInt("tile", call.argument<Int>("tile")!!)
+                            putInt("pad", call.argument<Int>("pad")!!)
+                            putInt("outW", call.argument<Int>("outW") ?: (call.argument<Int>("w")!! * call.argument<Int>("scale")!!))
+                            putInt("outH", call.argument<Int>("outH") ?: (call.argument<Int>("h")!! * call.argument<Int>("scale")!!))
+                            putBoolean("post", call.argument<Boolean>("post") ?: false)
+                            putBoolean("lowQuality", call.argument<Boolean>("lowQuality") ?: false)
+                            putFloat("texture", (call.argument<Double>("texture") ?: 0.0).toFloat())
+                            putInt("skin", call.argument<Int>("skin") ?: 0)
+                            putStringArrayList("backends", ArrayList((call.argument<List<*>>("backends") ?: listOf("cpu")).map { it.toString() }))
+                        }
+                        val r = UpscaleClient.run(this, args) { d, t, b ->
+                            runOnUiThread { up.invokeMethod("progress", mapOf("done" to d, "total" to t, "backend" to b)) }
+                        }
                         runOnUiThread { result.success(r) }
                     } catch (e: InterruptedException) {
                         runOnUiThread { result.error("CANCELLED", "cancelled", null) }
                     } catch (e: Throwable) {
                         runOnUiThread { result.error("ERR", e.toString(), null) }
-                    } finally { upscaler = null }
+                    }
                 }.start()
                 else -> result.notImplemented()
             }
