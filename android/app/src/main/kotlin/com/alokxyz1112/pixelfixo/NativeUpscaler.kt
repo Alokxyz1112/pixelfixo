@@ -46,7 +46,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
     /** Returns the backend that did the work. Output is outW x outH RGB (outW <= w*scale). */
     fun run(model: String, inPath: String, w: Int, h: Int, scale: Int, tile: Int, pad: Int, outPath: String,
             backends: List<String>, outW: Int = w * scale, outH: Int = h * scale, post: Boolean = false,
-            lowQuality: Boolean = false, texture: Float = 0f): Map<String, Any> {
+            lowQuality: Boolean = false, texture: Float = 0f, skin: Int = 0): Map<String, Any> {
         cancel.set(false)
         val rgb = File(inPath).readBytes()
         val out = ByteArray(outW * outH * 3)
@@ -96,7 +96,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                 name = queue.removeFirst(); checked = false
                 continue // same tile again on the next backend
             }
-            if (post) finishTile(res, arr, s, scale, lowQuality, texture)
+            if (post) finishTile(res, arr, s, scale, lowQuality, texture, skin)
             writeTile(res, s, scale, pad, t, out, w, h, outW, outH, fx, fy)
             i++
             progress(i, tiles.size, name)
@@ -140,7 +140,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
     }
 
     /** Color anchor and texture on one padded tile, in place on the model output (planes, 0..1). */
-    private fun finishTile(res: FloatArray, inp: FloatArray, s: Int, scale: Int, lowQuality: Boolean, texture: Float) {
+    private fun finishTile(res: FloatArray, inp: FloatArray, s: Int, scale: Int, lowQuality: Boolean, texture: Float, skin: Int = 0) {
         val so = s * scale; val po = so * so; val n = s * s
         val dy = FloatArray(n); val dcb = FloatArray(n); val dcr = FloatArray(n); val luma = FloatArray(n)
         val inv = 1f / (scale * scale)
@@ -161,10 +161,13 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         val bcr = blur(dcr, s, if (lowQuality) 2 else 1)
         val tex = if (lowQuality) texture * 0.4f else texture
         val hf = FloatArray(n)
+        // Skin zones (any skin tone, from the input's own chroma): get a bit more of the real texture back.
+        val sw = if (skin > 0) skinWeight(inp, s) else null
         if (tex > 0f) { val lb = blur(luma, s, 1); for (j in 0 until n) {
             // Coring: drop tiny ripples (JPEG noise and block edges), keep real detail.
             val d = luma[j] - lb[j]; val m = Math.abs(d) - CORE
-            hf[j] = if (m > 0f) Math.copySign(m, d) * tex else 0f
+            val t = if (sw != null) tex * (1f + SKIN_BOOST * sw[j]) else tex
+            hf[j] = if (m > 0f) Math.copySign(m, d) * t else 0f
         } }
         for (y in 0 until so) {
             val fy = ((y + .5f) / scale - .5f).coerceIn(0f, s - 1f)
@@ -183,7 +186,61 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                 res[2 * po + k] += ly + 1.772f * lcb
             }
         }
+        if (skin >= 2 && sw != null) softenSkinEdges(res, luma, sw, s, scale)
     }
+
+    /** Soft 0..1 skin weight per input pixel. BT.601 8-bit Cb 80..125, Cr 133..173 with a Gaussian falloff
+     *  (sigma 6), which covers light, brown and dark skin. Very dark pixels fade out. */
+    private fun skinWeight(inp: FloatArray, s: Int): FloatArray {
+        val n = s * s; val w = FloatArray(n)
+        fun soft(v: Float, lo: Float, hi: Float): Float { val d = maxOf(lo - v, 0f) + maxOf(v - hi, 0f); return Math.exp((-d * d / 72f).toDouble()).toFloat() }
+        for (j in 0 until n) {
+            val r = inp[j] * 255f; val g = inp[n + j] * 255f; val b = inp[2 * n + j] * 255f
+            val y = 0.299f * r + 0.587f * g + 0.114f * b
+            val cb = 128f - 0.168736f * r - 0.331264f * g + 0.5f * b
+            val cr = 128f + 0.5f * r - 0.418688f * g - 0.081312f * b
+            w[j] = soft(cb, 80f, 125f) * soft(cr, 133f, 173f) * ((y - 12f) / 20f).coerceIn(0f, 1f)
+        }
+        return blur(w, s, 1)
+    }
+
+    /** On skin, pulls a small share of the plain (bicubic) input luma back in on strong edges only, so lashes,
+     *  brows and beard outlines stop looking inked on. Flat skin and its texture are left alone. */
+    private fun softenSkinEdges(res: FloatArray, luma: FloatArray, sw: FloatArray, s: Int, scale: Int) {
+        val so = s * scale; val po = so * so
+        val y = FloatArray(po); for (k in 0 until po) y[k] = 0.299f * res[k] + 0.587f * res[po + k] + 0.114f * res[2 * po + k]
+        val e = FloatArray(po)
+        for (yy in 1 until so - 1) for (xx in 1 until so - 1) {
+            val k = yy * so + xx
+            val gx = y[k + 1] - y[k - 1]; val gy = y[k + so] - y[k - so]
+            var t = ((Math.sqrt((gx * gx + gy * gy).toDouble()).toFloat() * 0.5f - EDGE_LO) / (EDGE_HI - EDGE_LO)).coerceIn(0f, 1f)
+            e[k] = t * t * (3f - 2f * t)
+        }
+        val eb = blur(e, so, 1)
+        // Catmull-Rom weights for the 4 phases of a 4x upscale.
+        val cw = Array(scale) { p -> val t = ((p + .5f) / scale - .5f).let { it - Math.floor(it.toDouble()).toFloat() }
+            fun k(x0: Float): Float { val x = Math.abs(x0); return if (x < 1) 1.5f * x * x * x - 2.5f * x * x + 1 else if (x < 2) -.5f * x * x * x + 2.5f * x * x - 4 * x + 2 else 0f }
+            floatArrayOf(k(t + 1), k(t), k(1 - t), k(2 - t)) }
+        val rows = FloatArray(so * s) // vertical pass: so rows x s cols
+        for (yy in 0 until so) { val f = (yy + .5f) / scale - .5f; val i = Math.floor(f.toDouble()).toInt(); val w = cw[yy % scale]
+            for (x in 0 until s) { var a = 0f; for (d in 0..3) a += w[d] * luma[(i + d - 1).coerceIn(0, s - 1) * s + x]; rows[yy * s + x] = a } }
+        for (yy in 0 until so) {
+            val fy = ((yy + .5f) / scale - .5f).coerceIn(0f, s - 1f); val y0 = fy.toInt(); val y1 = minOf(y0 + 1, s - 1); val ty = fy - y0
+            for (xx in 0 until so) {
+                val k = yy * so + xx; if (eb[k] <= 0f) continue
+                val fx = ((xx + .5f) / scale - .5f).coerceIn(0f, s - 1f); val x0 = fx.toInt(); val x1 = minOf(x0 + 1, s - 1); val tx = fx - x0
+                val wk = (sw[y0 * s + x0] * (1 - tx) + sw[y0 * s + x1] * tx) * (1 - ty) + (sw[y1 * s + x0] * (1 - tx) + sw[y1 * s + x1] * tx) * ty
+                val a = EDGE_BLEND * wk * eb[k]; if (a <= 0f) continue
+                val f = (xx + .5f) / scale - .5f; val i = Math.floor(f.toDouble()).toInt(); val w = cw[xx % scale]
+                var ref = 0f; for (d in 0..3) ref += w[d] * rows[yy * s + (i + d - 1).coerceIn(0, s - 1)]
+                val dl = a * (ref - y[k]); res[k] += dl; res[po + k] += dl; res[2 * po + k] += dl
+            }
+        }
+    }
+
+    private val SKIN_BOOST = 0.25f // 1.25x texture on skin
+    private val EDGE_BLEND = 0.15f
+    private val EDGE_LO = 0.015f; private val EDGE_HI = 0.05f
 
     private val CORE = 2f / 255f
 

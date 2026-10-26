@@ -67,7 +67,7 @@ flutter:
   assets:
     - assets/logo.png
     - assets/logo_dark.png
-    - assets/models/realesr-general-x4v3-d50.onnx
+    - assets/models/realesr-general-x4v3-d40.onnx
     - assets/models/realesr-general-x4v3-d30.onnx
     - assets/models/LICENSE-CC-BY-4.0.txt
     - assets/models/LICENSE-Real-ESRGAN.txt
