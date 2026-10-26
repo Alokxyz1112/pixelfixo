@@ -54,6 +54,12 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread { result.success(u) }
                     } catch (e: Throwable) { runOnUiThread { result.error("ERR", e.toString(), null) } }
                 }.start()
+                "share" -> {
+                    try {
+                        share(call.argument<String>("path")!!, call.argument<String>("mime") ?: "image/png")
+                        result.success(true)
+                    } catch (e: Throwable) { result.error("ERR", e.toString(), null) }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -102,6 +108,17 @@ class MainActivity : FlutterActivity() {
         var n = 1
         while (exists("${stem}_$n$ext")) n++
         return "${stem}_$n$ext"
+    }
+
+    /** Opens the system share sheet for a file already written into the cache. */
+    private fun share(path: String, mime: String) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", File(path))
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(send, "Share photo"))
     }
 
     /** Saves into Pictures/Pixelfixo. Only a name and type are set, no title, description or location. */

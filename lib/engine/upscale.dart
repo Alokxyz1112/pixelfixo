@@ -56,6 +56,38 @@ double estimateSeconds(UpModel m, int w, int h) => 1.5 + (measuredSecPerMp[m] ??
 /// "About 20 s" style text.
 String estimateText(double s) => s < 60 ? 'About ${math.max(5, (s / 5).round() * 5)} s' : 'About ${(s / 60).toStringAsFixed(s < 600 ? 1 : 0)} min';
 
+/// On-device execution order. NNAPI is left out on purpose: on many phones its driver kills the process
+/// instead of returning an error, so an upscale used to close the app instantly. XNNPACK is the fast CPU path.
+List<String> backendsFor(UpModel m) {
+  assert(m.name.isNotEmpty);
+  return const ['xnnpack', 'cpu'];
+}
+
+/// Starts of tiles of [tile] px along an image edge of [length], overlapping by [overlap] px.
+/// The last tile is pulled back so the far edge is always covered. NativeUpscaler.origins uses the same rule.
+List<int> tileOrigins(int length, int tile, int overlap) {
+  if (tile < 1) throw ArgumentError.value(tile, 'tile');
+  if (length <= tile) return [0];
+  final step = math.max(1, tile - overlap);
+  final out = <int>[];
+  var p = 0;
+  while (p + tile < length) {
+    out.add(p);
+    p += step;
+  }
+  final last = length - tile;
+  if (out.isEmpty || out.last != last) out.add(last);
+  return out;
+}
+
+/// PNG bytes stay as they are. "jpeg" re-encodes at [a.$3] quality (70 to 100) for a much smaller file.
+Uint8List encodeSaved((Uint8List, String, int) a) {
+  if (a.$2 != 'jpeg') return a.$1;
+  final im = img.decodePng(a.$1);
+  if (im == null) throw Exception('Could not prepare this photo for saving');
+  return img.encodeJpg(im, quality: a.$3.clamp(70, 100));
+}
+
 /// Core rectangle of the input that one tile is responsible for.
 class Tile {
   final int x, y, w, h;
@@ -239,7 +271,7 @@ class Upscaler {
   static void Function(int, int, String)? _onProgress;
   static bool _hooked = false;
 
-  /// Backend used by the last native run ("nnapi", "xnnpack" or "cpu"), for the result screen.
+  /// Backend used by the last native run ("xnnpack" or "cpu"), for the result screen.
   static String? lastBackend;
 
   /// Path of the model on disk. The bundled one is copied out of the APK once, since native code needs a file.
@@ -256,7 +288,7 @@ class Upscaler {
 
   /// Runs the model over the whole RGB image in native code (NNAPI fp16, then XNNPACK, then CPU).
   static Future<Uint8List> _native(DecodedImage d, UpModel m, void Function(double)? progress, bool Function()? cancelled,
-      {int? outW, int? outH, PostOptions? post}) async {
+      {int? outW, int? outH, PostOptions? post, bool faces = false}) async {
     outW ??= d.w * 4;
     outH ??= d.h * 4;
     if (!_hooked) {
@@ -287,15 +319,14 @@ class Upscaler {
         'scale': 4,
         'tile': m.tile,
         'pad': 16,
-        // The big Ultra net is mostly ops NNAPI can't take whole, and a split graph was slower than XNNPACK alone.
-        'backends': m == UpModel.ultra ? ['xnnpack', 'cpu'] : ['nnapi', 'xnnpack', 'cpu'],
+        'backends': backendsFor(m),
         'outW': outW,
         'outH': outH,
         'post': post != null,
         'lowQuality': post?.lowQuality ?? false,
-        // Ultra gets the skin zone fix and softer inked edges. Fast runs exactly as in 1.0.3.
+        // Ultra, and Recover faces on a photo model, soften inked skin edges. Drawings never take that pass.
         'texture': post?.texture ?? 0.0,
-        'skin': m == UpModel.ultra ? 2 : 0,
+        'skin': m == UpModel.art ? 0 : (m == UpModel.ultra || faces ? 2 : 0),
       });
       lastBackend = r?['backend'] as String?;
       measuredSecPerMp[m] = sw.elapsedMilliseconds / 1000 / (d.w * d.h / 1e6);
@@ -314,14 +345,15 @@ class Upscaler {
 
   /// Upscales encoded image bytes by [scale] (2, 3 or 4) and returns a PNG.
   static Future<UpscaleResult> run(Uint8List bytes, int scale, UpModel m,
-      {PostOptions post = const PostOptions(), void Function(double)? progress, bool Function()? cancelled}) async {
+      {PostOptions post = const PostOptions(), bool faces = false, void Function(double)? progress, bool Function()? cancelled}) async {
     if (scale < 2 || scale > 4) throw ArgumentError.value(scale, 'scale');
+    lastBackend = null;
     final opt = post.forSource(jpegQuality(bytes));
     final d = await compute(decodeForUpscale, (bytes, opt.cleanup));
     // The model always runs on the full resolution input. Only the output size is capped.
     final (outW, outH) = outputSize(d.w, d.h, scale);
     try {
-      final out = await _native(d, m, progress, cancelled, outW: outW, outH: outH, post: opt);
+      final out = await _native(d, m, progress, cancelled, outW: outW, outH: outH, post: opt, faces: faces);
       final png = await compute(finishNative, (out, outW, outH, sourceNoise(d.rgb, d.w, d.h), opt));
       return UpscaleResult(png, outW, outH, d.ow, d.oh, d.w != d.ow || outW < d.w * scale);
     } catch (e) {
@@ -390,7 +422,12 @@ Uint8List finishNative((Uint8List, int, int, double, PostOptions) a) {
 Uint8List finishWithPost((Uint8List, int, int, Uint8List, int, int, PostOptions) a) {
   final (rgb4, w, h, src, tw, th, opt) = a;
   final fixed = postProcessBands(rgb4, w * 4, h * 4, src, w, h, 4, opt);
-  return finishUpscale((fixed, w * 4, h * 4, tw, th));
+  if (opt.sharpen <= 0) return finishUpscale((fixed, w * 4, h * 4, tw, th));
+  var im = img.Image.fromBytes(width: w * 4, height: h * 4, bytes: fixed.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
+  if (im.width != tw) im = img.copyResize(im, width: tw, height: th, interpolation: img.Interpolation.cubic);
+  final rgb = Uint8List.fromList(im.getBytes(order: img.ChannelOrder.rgb));
+  final sharp = touchUp(rgb, im.width, im.height, 0, PostOptions(sharpen: opt.sharpen));
+  return img.encodePng(img.Image.fromBytes(width: im.width, height: im.height, bytes: sharp.buffer, numChannels: 3, order: img.ChannelOrder.rgb), level: 6);
 }
 
 Future<UpscaleResult> finishPipeline(DecodedImage d, Uint8List rgb4, int scale, PostOptions opt, String label) async {

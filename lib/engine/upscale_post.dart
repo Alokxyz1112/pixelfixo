@@ -142,6 +142,7 @@ class PostOptions {
   final double vibrance; // 0 = off, 0.12 = gentle color restore (skin is mostly left alone)
   final bool cleanup; // JPEG: decode with compression cleanup (fewer blocks, colour that follows edges)
   final bool lowQuality; // heavily compressed JPEG: smooth blocky color more, never bring back source detail
+  final double sharpen; // 0 off, about 1 strong. Unsharp mask on the finished photo.
   const PostOptions({
     this.color = true,
     this.natural = 0,
@@ -150,12 +151,13 @@ class PostOptions {
     this.vibrance = 0,
     this.lowQuality = false,
     this.cleanup = true,
+    this.sharpen = 0,
   });
 
   /// Adjusts for the source: a badly compressed JPEG gets stronger color cleanup and no grain, since its own
   /// "texture" is mostly compression noise.
   PostOptions forSource(int? jpegQ) => (jpegQ != null && jpegQ < 70)
-      ? PostOptions(color: true, natural: natural, texture: texture, grain: false, vibrance: vibrance, lowQuality: true, cleanup: cleanup)
+      ? PostOptions(color: true, natural: natural, texture: texture, grain: false, vibrance: vibrance, lowQuality: true, cleanup: cleanup, sharpen: sharpen)
       : this;
 }
 
@@ -324,10 +326,48 @@ Uint8List postProcessBands(
   return out;
 }
 
-/// Grain and color boost on a finished image (no source needed). [noise] is [sourceNoise] of the original.
-Uint8List touchUp(Uint8List o, int w, int h, double noise, PostOptions opt, {int seed = 1}) {
-  if (!opt.grain && opt.vibrance <= 0) return o;
+/// Unsharp mask. [amount] is how much of the fine detail (pixel minus a small blur) is added back.
+/// Bands overlap so the blur does not leave a line every few dozen rows.
+Uint8List unsharp(Uint8List o, int w, int h, double amount) {
+  if (amount <= 0.001 || w < 3 || h < 3) return o;
   final out = Uint8List.fromList(o);
+  const band = 48;
+  const margin = 4;
+  const rad = 1;
+  for (var y0 = 0; y0 < h; y0 += band) {
+    final a = math.max(0, y0 - margin);
+    final b = math.min(h, y0 + band + margin);
+    final bh = b - a;
+    final yFrom = y0 - a;
+    final yTo = math.min(h, y0 + band) - a;
+    for (var c = 0; c < 3; c++) {
+      final plane = Float32List(w * bh);
+      for (var y = 0; y < bh; y++) {
+        final row = (a + y) * w;
+        for (var x = 0; x < w; x++) {
+          plane[y * w + x] = o[(row + x) * 3 + c].toDouble();
+        }
+      }
+      final bl = blurPlane(plane, w, bh, rad);
+      for (var y = yFrom; y < yTo; y++) {
+        final row = (a + y) * w;
+        for (var x = 0; x < w; x++) {
+          final src = plane[y * w + x];
+          final v = src + amount * (src - bl[y * w + x]);
+          out[(row + x) * 3 + c] = (v + .5).clamp(0, 255).toInt();
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/// Grain, color boost and sharpen on a finished image (no source needed). [noise] is [sourceNoise] of the original.
+Uint8List touchUp(Uint8List o, int w, int h, double noise, PostOptions opt, {int seed = 1}) {
+  if (!opt.grain && opt.vibrance <= 0 && opt.sharpen <= 0) return o;
+  final base = opt.sharpen > 0 ? unsharp(o, w, h, opt.sharpen.clamp(0.0, 1.5).toDouble()) : o;
+  if (!opt.grain && opt.vibrance <= 0) return base;
+  final out = Uint8List.fromList(base);
   final sigma = math.min(noise, 4.0) * 0.6;
   final rnd = math.Random(seed);
   const band = 64;

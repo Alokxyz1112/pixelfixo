@@ -70,6 +70,26 @@ void main() {
     expect(maxd, lessThanOrEqualTo(3));
   });
 
+  test('sharpen lifts an edge and leaves a flat area alone', () {
+    const w = 32, h = 16;
+    final o = Uint8List(w * h * 3);
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final v = x < 16 ? 40 : 210;
+        final i = (y * w + x) * 3;
+        o[i] = v;
+        o[i + 1] = v;
+        o[i + 2] = v;
+      }
+    }
+    final s = touchUp(o, w, h, 0, const PostOptions(sharpen: 0.8));
+    int l(int x) => s[(8 * w + x) * 3];
+    expect(l(15), lessThan(40));
+    expect(l(16), greaterThan(210));
+    expect(l(2), closeTo(40, 2));
+    expect(s, isNot(same(o)));
+  });
+
   test('low quality JPEG turns off grain and turns on extra cleanup', () {
     const p = PostOptions(grain: true);
     expect(p.forSource(40).lowQuality, isTrue);

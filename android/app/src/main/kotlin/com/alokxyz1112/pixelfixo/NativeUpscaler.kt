@@ -1,26 +1,26 @@
 package com.alokxyz1112.pixelfixo
 
-import ai.onnxruntime.providers.NNAPIFlags
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import android.util.Log
 import java.io.File
 import java.nio.FloatBuffer
-import java.util.EnumSet
+import java.util.Arrays
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Runs an upscale model over a raw RGB file tile by tile, all in native code, so tile data never has to cross the
- * Flutter channel. Backends are tried in the order given (NNAPI fp16, XNNPACK, plain CPU). A backend that throws or
- * hands back garbage (NaN, or a tile that no longer looks like its input) is dropped and the next one takes over
- * from the same tile.
+ * Runs an upscale model over a raw RGB file tile by tile, in native code, so tile data never crosses the Flutter
+ * channel. Backends are XNNPACK, then plain CPU.
  *
- * The model always works on the full resolution input. Each 4x tile is finished right here:
- *  1. color anchor: broad brightness and color drift against the input is measured and undone (fine detail is kept),
- *  2. texture: a share of the input's own fine luma detail (grain, pores, hair) is added back, so the result is
- *     not waxy,
- *  3. the tile is area averaged down to the requested output size (any scale up to 4), so a big photo never has
- *     to be shrunk before the model sees it.
+ * NNAPI is intentionally not used. On a lot of phones its driver aborts the process (a native crash) instead of
+ * throwing, which closed the app the moment Fast mode started. A Java try/catch cannot catch that.
+ *
+ * The model always sees the full-resolution input. Each 4x tile is finished here:
+ *  1. color anchor: broad brightness and color drift against the input is measured and undone,
+ *  2. texture: a share of the input's own fine luma (grain, pores, hair) is added back,
+ *  3. the tile is area-averaged to the requested output size (any scale up to 4).
+ * Neighboring tiles overlap by a few pixels and are blended, so the joins do not show.
  */
 class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
     val cancel = AtomicBoolean(false)
@@ -28,35 +28,101 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
 
     private fun open(model: String, backend: String, s: Int): OrtSession {
         val o = OrtSession.SessionOptions()
-        val cores = Runtime.getRuntime().availableProcessors()
-        // Phones have 4 or fewer fast cores. More threads than that make every tile wait for the slow cores.
-        val threads = cores.coerceIn(1, 4)
-        for (d in listOf("h", "w", "height", "width")) o.setSymbolicDimensionValue(d, s.toLong())
-        o.setSymbolicDimensionValue("batch_size", 1)
-        o.setSymbolicDimensionValue("batch", 1)
-        o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        when (backend) {
-            "nnapi" -> { o.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16, NNAPIFlags.CPU_DISABLED)); o.setIntraOpNumThreads(threads) }
-            "xnnpack" -> { o.addXnnpack(mapOf("intra_op_num_threads" to threads.toString())); o.setIntraOpNumThreads(1) }
-            else -> o.setIntraOpNumThreads(threads)
+        try {
+            val cores = Runtime.getRuntime().availableProcessors()
+            // Phones have 4 or fewer fast cores. More threads than that make every tile wait on the slow cores.
+            val threads = cores.coerceIn(1, 4)
+            for (d in listOf("h", "w", "height", "width")) {
+                try { o.setSymbolicDimensionValue(d, s.toLong()) } catch (_: Throwable) {}
+            }
+            for (d in listOf("batch_size", "batch")) {
+                try { o.setSymbolicDimensionValue(d, 1L) } catch (_: Throwable) {}
+            }
+            o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            o.setInterOpNumThreads(1)
+            when (backend) {
+                "xnnpack" -> {
+                    o.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                    o.setIntraOpNumThreads(1)
+                }
+                else -> o.setIntraOpNumThreads(threads)
+            }
+            Log.i(TAG, "loading $backend tile $s")
+            return env.createSession(model, o)
+        } finally {
+            try { o.close() } catch (_: Throwable) {}
         }
-        return env.createSession(model, o)
+    }
+
+    /** Keeps the last good session so a second run with the same model does not reload it. */
+    private fun takeSession(model: String, backend: String, s: Int): OrtSession {
+        val key = "$model|$backend|$s"
+        val warm = kept
+        if (warm != null && keptKey == key) return warm
+        closeKept()
+        val ses = open(model, backend, s)
+        kept = ses
+        keptKey = key
+        return ses
+    }
+
+    private fun closeSession(ses: OrtSession?) {
+        if (ses == null) return
+        try { ses.close() } catch (_: Throwable) {}
+        if (kept == ses) {
+            kept = null
+            keptKey = null
+        }
     }
 
     /** Returns the backend that did the work. Output is outW x outH RGB (outW <= w*scale). */
     fun run(model: String, inPath: String, w: Int, h: Int, scale: Int, tile: Int, pad: Int, outPath: String,
             backends: List<String>, outW: Int = w * scale, outH: Int = h * scale, post: Boolean = false,
             lowQuality: Boolean = false, texture: Float = 0f, skin: Int = 0): Map<String, Any> {
-        cancel.set(false); skinOk = true
+        return synchronized(gate) {
+        cancel.set(false)
+        skinOk = true
         val rgb = File(inPath).readBytes()
+        if (w < 1 || h < 1 || rgb.size < w * h * 3) throw IllegalArgumentException("bad input")
         val out = ByteArray(outW * outH * 3)
-        val fx = outW.toDouble() / w; val fy = outH.toDouble() / h // output pixels per input pixel
-        val core = minOf(tile, maxOf(w, h))
+        var core = safeCore(tile, w, h)
+        var attempt = 0
+        var result: Map<String, Any>? = null
+        while (result == null) {
+            try {
+                result = runTiles(model, rgb, w, h, scale, core, pad, outPath, backends, out, outW, outH, post, lowQuality, texture, skin)
+            } catch (e: InterruptedException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                closeKept()
+                System.gc()
+                attempt++
+                if (attempt >= 2 || core <= 96) {
+                    throw IllegalStateException("OutOfMemory: not enough memory for this photo at this size. Try 2x or a smaller photo.")
+                }
+                core = (core / 2).coerceAtLeast(96)
+                Arrays.fill(out, 0.toByte())
+                Log.w(TAG, "out of memory, retrying at tile $core")
+            }
+        }
+        checkNotNull(result)
+        }
+    }
+
+    private fun runTiles(model: String, rgb: ByteArray, w: Int, h: Int, scale: Int, core: Int, pad: Int, outPath: String,
+                         backends: List<String>, out: ByteArray, outW: Int, outH: Int, post: Boolean, lowQuality: Boolean,
+                         texture: Float, skin: Int): Map<String, Any> {
+        val fx = outW.toDouble() / w
+        val fy = outH.toDouble() / h
         val s = core + 2 * pad
-        val tiles = ArrayList<IntArray>()
-        var y = 0
-        while (y < h) { var x = 0; while (x < w) { tiles.add(intArrayOf(x, y, minOf(core, w - x), minOf(core, h - y))); x += core }; y += core }
-        val queue = ArrayDeque(backends)
+        var overlap = if (core >= 64 && (w > core || h > core)) minOf(8, core / 8) else 0
+        // One byte of blend weight per output pixel. If that allocation fails, tiles still meet, they just are not blended.
+        val weights: ByteArray? = if (overlap > 0) {
+            try { ByteArray(outW * outH) } catch (e: OutOfMemoryError) { overlap = 0; null }
+        } else null
+        val tiles = buildTiles(w, h, core, overlap)
+        val allowed = backends.map { it.lowercase() }.filter { it == "xnnpack" || it == "cpu" }
+        val queue = ArrayDeque(if (allowed.isEmpty()) listOf("xnnpack", "cpu") else allowed)
         var name = queue.removeFirst()
         var ses: OrtSession? = null
         val t0 = System.nanoTime()
@@ -65,7 +131,7 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
         var i = 0
         var checked = false
         while (i < tiles.size) {
-            if (cancel.get()) { ses?.close(); throw InterruptedException("cancelled") }
+            if (cancel.get()) throw InterruptedException("cancelled")
             val t = tiles[i]
             input.clear()
             val arr = input.array()
@@ -73,7 +139,8 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                 val sy = (t[1] - pad + yy).coerceIn(0, h - 1)
                 for (xx in 0 until s) {
                     val sx = (t[0] - pad + xx).coerceIn(0, w - 1)
-                    val p = (sy * w + sx) * 3; val o = yy * s + xx
+                    val p = (sy * w + sx) * 3
+                    val o = yy * s + xx
                     arr[o] = (rgb[p].toInt() and 255) / 255f
                     arr[plane + o] = (rgb[p + 1].toInt() and 255) / 255f
                     arr[2 * plane + o] = (rgb[p + 2].toInt() and 255) / 255f
@@ -81,49 +148,72 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
             }
             val res: FloatArray
             try {
-                if (ses == null) ses = open(model, name, s)
+                if (ses == null) ses = takeSession(model, name, s)
                 OnnxTensor.createTensor(env, input, longArrayOf(1, 3, s.toLong(), s.toLong())).use { x ->
                     ses!!.run(mapOf(ses!!.inputNames.first() to x)).use { r ->
                         val fb = (r[0] as OnnxTensor).floatBuffer
-                        res = FloatArray(fb.remaining()); fb.get(res)
+                        res = FloatArray(fb.remaining())
+                        fb.get(res)
                     }
                 }
                 if (res.size != 3 * s * s * scale * scale) throw IllegalStateException("bad output size")
-                if (!checked) { sane(res, arr, s, scale); checked = true }
+                if (!checked) {
+                    sane(res, arr, s, scale)
+                    checked = true
+                }
+            } catch (e: OutOfMemoryError) {
+                closeSession(ses)
+                throw e
             } catch (e: Exception) {
-                ses?.close(); ses = null
+                Log.w(TAG, "$name failed: ${e.message}")
+                closeSession(ses)
+                ses = null
                 if (e is InterruptedException || queue.isEmpty()) throw e
-                name = queue.removeFirst(); checked = false
-                continue // same tile again on the next backend
+                name = queue.removeFirst()
+                checked = false
+                continue
             }
             if (post) {
-                // Post processing must never take the whole upscale down. It only adds small corrections to the
-                // model tile, so if it fails part way the tile is still a valid image.
+                // A failed finish still leaves a valid model tile, so one bad tile cannot blank the photo.
                 try { finishTile(res, arr, s, scale, lowQuality, texture, skin) } catch (e: Throwable) { skinOk = false }
             }
-            writeTile(res, s, scale, pad, t, out, w, h, outW, outH, fx, fy)
+            writeTile(res, s, scale, pad, t, out, w, h, outW, outH, fx, fy, weights, overlap)
             i++
-            progress(i, tiles.size, name)
+            report(i, tiles.size, name)
         }
-        ses?.close()
         File(outPath).writeBytes(out)
         return mapOf("backend" to name, "ms" to (System.nanoTime() - t0) / 1000000, "tiles" to tiles.size)
     }
 
-    /** Copies the tile's core into the output, area averaging when the output is smaller than scale x. */
+    private fun report(done: Int, total: Int, backend: String) {
+        try { progress(done, total, backend) } catch (_: Throwable) {}
+    }
+
+    /** Copies the tile's core into the output, area-averaging when the output is smaller than scale x, blending overlaps. */
     private fun writeTile(res: FloatArray, s: Int, scale: Int, pad: Int, t: IntArray, out: ByteArray, w: Int, h: Int, outW: Int, outH: Int,
-                          fx: Double, fy: Double) {
-        val so = s * scale; val po = so * so
-        val x0 = Math.floor(t[0] * fx).toInt(); val x1 = if (t[0] + t[2] >= w) outW else Math.floor((t[0] + t[2]) * fx).toInt()
-        val y0 = Math.floor(t[1] * fy).toInt(); val y1 = if (t[1] + t[3] >= h) outH else Math.floor((t[1] + t[3]) * fy).toInt()
-        val kx = scale / fx; val ky = scale / fy // 4x pixels per output pixel (>= 1)
-        // Position in tile-local 4x coordinates (including pad) of global 4x coordinate g.
-        val offX = (t[0] - pad) * scale; val offY = (t[1] - pad) * scale
+                          fx: Double, fy: Double, weights: ByteArray?, overlap: Int) {
+        val so = s * scale
+        val po = so * so
+        val x0 = Math.floor(t[0] * fx).toInt()
+        val x1 = if (t[0] + t[2] >= w) outW else Math.floor((t[0] + t[2]) * fx).toInt()
+        val y0 = Math.floor(t[1] * fy).toInt()
+        val y1 = if (t[1] + t[3] >= h) outH else Math.floor((t[1] + t[3]) * fy).toInt()
+        val kx = scale / fx
+        val ky = scale / fy
+        val offX = (t[0] - pad) * scale
+        val offY = (t[1] - pad) * scale
+        val ovX = (overlap * fx).toFloat().coerceAtLeast(1f)
+        val ovY = (overlap * fy).toFloat().coerceAtLeast(1f)
         for (oy in y0 until minOf(y1, outH)) {
-            val sy0 = oy * ky - offY; val sy1 = (oy + 1) * ky - offY
+            val sy0 = oy * ky - offY
+            val sy1 = (oy + 1) * ky - offY
             for (ox in x0 until minOf(x1, outW)) {
-                val sx0 = ox * kx - offX; val sx1 = (ox + 1) * kx - offX
-                var r = 0.0; var g = 0.0; var b = 0.0; var wsum = 0.0
+                val sx0 = ox * kx - offX
+                val sx1 = (ox + 1) * kx - offX
+                var r = 0.0
+                var g = 0.0
+                var b = 0.0
+                var wsum = 0.0
                 var yy = Math.floor(sy0).toInt()
                 while (yy < sy1) {
                     val wy = minOf(yy + 1.0, sy1) - maxOf(yy.toDouble(), sy0)
@@ -131,16 +221,56 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
                     var xx = Math.floor(sx0).toInt()
                     while (xx < sx1) {
                         val wx = minOf(xx + 1.0, sx1) - maxOf(xx.toDouble(), sx0)
-                        val k = cy * so + xx.coerceIn(0, so - 1); val wgt = wx * wy
-                        r += res[k] * wgt; g += res[po + k] * wgt; b += res[2 * po + k] * wgt; wsum += wgt
+                        val k = cy * so + xx.coerceIn(0, so - 1)
+                        val wgt = wx * wy
+                        r += res[k] * wgt
+                        g += res[po + k] * wgt
+                        b += res[2 * po + k] * wgt
+                        wsum += wgt
                         xx++
                     }
                     yy++
                 }
+                if (wsum <= 1e-6) continue
+                val nr = (r / wsum).toFloat()
+                val ng = (g / wsum).toFloat()
+                val nb = (b / wsum).toFloat()
                 val o = (oy * outW + ox) * 3
-                out[o] = q((r / wsum).toFloat()); out[o + 1] = q((g / wsum).toFloat()); out[o + 2] = q((b / wsum).toFloat())
+                if (weights == null) {
+                    out[o] = q(nr)
+                    out[o + 1] = q(ng)
+                    out[o + 2] = q(nb)
+                    continue
+                }
+                var feather = 1f
+                if (t[0] > 0) feather = minOf(feather, ((ox - x0 + 0.5f) / ovX).coerceIn(0f, 1f))
+                if (t[0] + t[2] < w) feather = minOf(feather, ((x1 - ox - 0.5f) / ovX).coerceIn(0f, 1f))
+                if (t[1] > 0) feather = minOf(feather, ((oy - y0 + 0.5f) / ovY).coerceIn(0f, 1f))
+                if (t[1] + t[3] < h) feather = minOf(feather, ((y1 - oy - 0.5f) / ovY).coerceIn(0f, 1f))
+                val fresh = (feather.coerceAtLeast(0.02f) * 255f).toInt().coerceIn(1, 255)
+                val idx = oy * outW + ox
+                val old = weights[idx].toInt() and 255
+                if (old == 0) {
+                    out[o] = q(nr)
+                    out[o + 1] = q(ng)
+                    out[o + 2] = q(nb)
+                } else {
+                    val a = fresh.toFloat()
+                    val bw = old.toFloat()
+                    val sum = a + bw
+                    out[o] = mix(out[o], nr, a, bw, sum)
+                    out[o + 1] = mix(out[o + 1], ng, a, bw, sum)
+                    out[o + 2] = mix(out[o + 2], nb, a, bw, sum)
+                }
+                weights[idx] = minOf(255, old + fresh).toByte()
             }
         }
+    }
+
+    private fun mix(prev: Byte, neu: Float, a: Float, b: Float, sum: Float): Byte {
+        val pv = prev.toInt() and 255
+        val nv = (neu * 255f + 0.5f).toInt().coerceIn(0, 255)
+        return ((pv * b + nv * a) / sum).toInt().coerceIn(0, 255).toByte()
     }
 
     /** Color anchor and texture on one padded tile, in place on the model output (planes, 0..1). */
@@ -280,5 +410,65 @@ class NativeUpscaler(private val progress: (Int, Int, String) -> Unit) {
             err += Math.abs(v - inp[c * s * s + yy * s + xx]); n++
         }
         if (err / n > 0.12) throw IllegalStateException("garbage output")
+    }
+
+    companion object {
+        private const val TAG = "Pixelfixo"
+        private val gate = Any()
+        private var kept: OrtSession? = null
+        private var keptKey: String? = null
+
+        private fun closeKept() {
+            val s = kept
+            kept = null
+            keptKey = null
+            try { s?.close() } catch (_: Throwable) {}
+        }
+
+        /** Largest tile edge that should fit the process heap. Big heaps keep the model's own tile. */
+        fun safeCore(tile: Int, w: Int, h: Int): Int {
+            var core = minOf(tile.coerceAtLeast(1), maxOf(w, h)).coerceAtLeast(1)
+            val budget = Runtime.getRuntime().maxMemory()
+            if (budget < 192L * 1024 * 1024) core = minOf(core, 96)
+            else if (budget < 320L * 1024 * 1024) core = minOf(core, 160)
+            return core
+        }
+
+        /** Tile starts along one axis. The last tile is pulled back so the far edge is covered. Same rule as tileOrigins in Dart. */
+        fun origins(length: Int, tile: Int, overlap: Int): IntArray {
+            if (length <= tile) return intArrayOf(0)
+            val step = (tile - overlap).coerceAtLeast(1)
+            val out = ArrayList<Int>()
+            var p = 0
+            while (p + tile < length) {
+                out.add(p)
+                p += step
+            }
+            val last = length - tile
+            if (out.isEmpty() || out.last() != last) out.add(last)
+            return out.toIntArray()
+        }
+
+        fun buildTiles(w: Int, h: Int, core: Int, overlap: Int): ArrayList<IntArray> {
+            val tiles = ArrayList<IntArray>()
+            if (overlap <= 0) {
+                var y = 0
+                while (y < h) {
+                    var x = 0
+                    while (x < w) {
+                        tiles.add(intArrayOf(x, y, minOf(core, w - x), minOf(core, h - y)))
+                        x += core
+                    }
+                    y += core
+                }
+                return tiles
+            }
+            for (yy in origins(h, core, overlap)) {
+                for (xx in origins(w, core, overlap)) {
+                    tiles.add(intArrayOf(xx, yy, minOf(core, w - xx), minOf(core, h - yy)))
+                }
+            }
+            return tiles
+        }
     }
 }

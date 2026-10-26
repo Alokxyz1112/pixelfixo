@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'batch.dart';
 import 'editor.dart';
 import 'theme.dart';
 
@@ -68,6 +69,18 @@ Future<void> openEditor(File f) async {
   navKey.currentState?.push(MaterialPageRoute(builder: (_) => EditorScreen(source: bytes)));
 }
 
+Future<void> pickBatch(BuildContext context) async {
+  try {
+    final xs = await ImagePicker().pickMultiImage(requestFullMetadata: false);
+    if (xs.isEmpty || !context.mounted) return;
+    navKey.currentState?.push(MaterialPageRoute(builder: (_) => BatchScreen(paths: [for (final x in xs) x.path])));
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open those photos ($e)'), behavior: SnackBarBehavior.floating));
+    }
+  }
+}
+
 Future<void> pickPhoto(BuildContext context) async {
   final x = await ImagePicker().pickImage(source: ImageSource.gallery, requestFullMetadata: false);
   if (x == null) return;
@@ -106,8 +119,17 @@ class HomeScreen extends StatelessWidget {
           PopupMenuButton<int>(
             tooltip: 'More',
             icon: const Icon(Icons.more_horiz),
-            onSelected: (_) => showAbout(context),
-            itemBuilder: (_) => const [PopupMenuItem(value: 0, child: Text('Open source licenses'))],
+            onSelected: (v) {
+              if (v == 1) {
+                pickBatch(context);
+              } else {
+                showAbout(context);
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 1, child: Text('Several photos')),
+              PopupMenuItem(value: 0, child: Text('Open source licenses')),
+            ],
           ),
           const SizedBox(width: 8),
         ],
@@ -185,7 +207,7 @@ class _Fact extends StatelessWidget {
 void showAbout(BuildContext context) => showLicensePage(
       context: context,
       applicationName: 'Pixelfixo',
-      applicationVersion: '1.0.3',
+      applicationVersion: '1.0.5',
       applicationIcon: Padding(padding: const EdgeInsets.all(12), child: ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.asset('assets/logo.png', width: 64))),
       applicationLegalese: 'MIT license. Upscaling models: Real-ESRGAN general x4v3 and anime 6B by Xintao Wang et al. (BSD-3-Clause), '
           '4xNomosWebPhoto_RealPLKSR by Philip Hofmann (CC BY 4.0). Runs on ONNX Runtime (MIT).',

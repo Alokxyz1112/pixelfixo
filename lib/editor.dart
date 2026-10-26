@@ -1,20 +1,15 @@
 import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import 'engine/look.dart';
 import 'engine/upscale.dart';
+import 'gallery_save.dart';
 import 'theme.dart';
 
 enum Phase { setup, downloading, running, done, error }
-
-/// Timestamp file name like 20261026_004512.png. Nothing else about the photo goes into the name.
-String saveName(DateTime t) {
-  String p(int v) => v.toString().padLeft(2, '0');
-  return '${t.year}${p(t.month)}${p(t.day)}_${p(t.hour)}${p(t.minute)}${p(t.second)}.png';
-}
 
 class EditorScreen extends StatefulWidget {
   final Uint8List source;
@@ -29,10 +24,11 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  static const _media = MethodChannel('pixelfixo/media');
   int scale = 4;
   UpModel model = UpModel.fast;
-  bool natural = true, color = false, grain = false, cleanup = true;
+  bool natural = true, color = false, grain = false, cleanup = true, faces = false, jpeg = false;
+  double sharpen = 0;
+  LookPreset? preset;
   Phase phase = Phase.setup;
   double progress = 0;
   String? error;
@@ -42,8 +38,12 @@ class _EditorScreenState extends State<EditorScreen> {
   Size? size;
   final Map<UpModel, bool> ready = {UpModel.fast: true};
   bool _cancel = false;
+  bool _working = false;
+  bool _saving = false;
   final _watch = Stopwatch();
   bool saved = false;
+  int? tookMs;
+  File? _shareFile;
 
   @override
   void initState() {
@@ -70,14 +70,37 @@ class _EditorScreenState extends State<EditorScreen> {
     buf.dispose();
   }
 
-  PostOptions get _post => PostOptions(texture: natural ? .3 : .6, grain: grain, vibrance: color ? .12 : 0, cleanup: cleanup);
+  PostOptions get _post => PostOptions(texture: natural ? .3 : .6, grain: grain, vibrance: color ? .12 : 0, cleanup: cleanup, sharpen: sharpen);
+
+  void _set(VoidCallback fn) => setState(() {
+        preset = null;
+        fn();
+      });
+
+  void _apply(LookPreset p) {
+    final c = lookFor(p, ultraReady: ready[UpModel.ultra] == true);
+    setState(() {
+      preset = p;
+      model = c.model;
+      scale = c.scale;
+      natural = c.natural;
+      color = c.color;
+      grain = c.grain;
+      cleanup = c.cleanup;
+      faces = c.faces;
+      sharpen = c.sharpen;
+    });
+  }
 
   Future<void> _go() async {
+    if (_working) return;
+    _working = true;
     _cancel = false;
     setState(() {
       error = null;
       saved = false;
       progress = 0;
+      tookMs = null;
     });
     try {
       if (ready[model] != true) {
@@ -90,13 +113,14 @@ class _EditorScreenState extends State<EditorScreen> {
       _watch
         ..reset()
         ..start();
-      final r = await Upscaler.run(widget.source, scale, model, post: _post, progress: (p) => mounted ? setState(() => progress = p) : null, cancelled: () => _cancel);
+      final r = await Upscaler.run(widget.source, scale, model, post: _post, faces: faces, progress: (p) => mounted ? setState(() => progress = p) : null, cancelled: () => _cancel);
       if (!mounted) return;
       setState(() {
         result = r;
         resultPng = r.png;
         outW = r.w;
         outH = r.h;
+        tookMs = _watch.elapsedMilliseconds;
         phase = Phase.done;
       });
     } on UpscaleCancelled {
@@ -109,25 +133,45 @@ class _EditorScreenState extends State<EditorScreen> {
         });
       }
     } finally {
+      _working = false;
       _watch.stop();
     }
   }
 
   Future<void> _save() async {
     final png = resultPng;
-    if (png == null) return;
-    final f = File('${(await getTemporaryDirectory()).path}/out_${DateTime.now().microsecondsSinceEpoch}.png');
-    await f.writeAsBytes(png);
+    if (png == null || _saving) return;
+    _saving = true;
     try {
-      await _media.invokeMethod('save', {'path': f.path, 'name': saveName(DateTime.now()), 'mime': 'image/png'});
+      await saveToGallery(png, jpeg: jpeg);
       if (!mounted) return;
       setState(() => saved = true);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to Pictures/Pixelfixo'), behavior: SnackBarBehavior.floating));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(jpeg ? 'Saved JPEG to Pictures/Pixelfixo' : 'Saved to Pictures/Pixelfixo'), behavior: SnackBarBehavior.floating));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save: $e'), behavior: SnackBarBehavior.floating));
     } finally {
-      if (await f.exists()) await f.delete();
+      _saving = false;
     }
+  }
+
+  Future<void> _share() async {
+    final png = resultPng;
+    if (png == null) return;
+    try {
+      final f = await sharePhoto(png, jpeg: jpeg, previous: _shareFile);
+      _shareFile = f;
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share: $e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  String _doneLine(UpscaleResult r) {
+    final cap = r.shrunk ? ' (big photo, shrunk a bit first)' : '';
+    final secs = tookMs == null ? '' : ' · ${tookMs! < 10000 ? (tookMs! / 1000).toStringAsFixed(1) : (tookMs! / 1000).round()} s';
+    final be = Upscaler.lastBackend;
+    final engine = be == null ? '' : ' · ${be == 'xnnpack' ? 'XNNPACK' : be == 'cpu' ? 'CPU' : be}';
+    final file = jpeg ? ' · JPEG' : '';
+    return '${r.srcW} x ${r.srcH}  to  ${r.w} x ${r.h}$cap$secs$engine$file';
   }
 
   String? get _eta {
@@ -150,6 +194,8 @@ class _EditorScreenState extends State<EditorScreen> {
         appBar: AppBar(
           title: Text(phase == Phase.done ? 'Before and after' : 'Upscale'),
           actions: [
+            if (phase == Phase.done && result != null)
+              IconButton(tooltip: 'Share', icon: const Icon(Icons.share_outlined), onPressed: _share),
             if (phase == Phase.done)
               IconButton(tooltip: 'Change settings', icon: const Icon(Icons.tune), onPressed: () => setState(() => phase = Phase.setup)),
           ],
@@ -182,7 +228,7 @@ class _EditorScreenState extends State<EditorScreen> {
       Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
         child: Text(
-          r == null ? 'Drag to compare' : '${r.srcW} x ${r.srcH}  to  ${r.w} x ${r.h}${r.shrunk ? ' (big photo, shrunk a bit first)' : ''}',
+          r == null ? 'Drag to compare' : _doneLine(r),
           style: t.bodySmall?.copyWith(color: c.onSurfaceVariant),
         ),
       ),
@@ -191,7 +237,7 @@ class _EditorScreenState extends State<EditorScreen> {
         child: Row(children: [
           Expanded(child: OutlinedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.photo_library_outlined, size: 20), label: const Text('New photo'))),
           const SizedBox(width: 12),
-          Expanded(child: FilledButton.icon(onPressed: saved ? null : _save, icon: Icon(saved ? Icons.check : Icons.download_outlined, size: 20), label: Text(saved ? 'Saved' : 'Save'))),
+          Expanded(child: FilledButton.icon(onPressed: saved || _saving ? null : _save, icon: Icon(saved ? Icons.check : Icons.download_outlined, size: 20), label: Text(saved ? 'Saved' : 'Save'))),
         ]),
       ),
     ]);
@@ -201,6 +247,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final t = Theme.of(context).textTheme, c = Theme.of(context).colorScheme;
     final s = size;
     final est = s == null ? null : estimateText(estimateSeconds(model, s.width.round(), s.height.round()));
+    final (ow, oh) = s == null ? (0, 0) : outputSize(s.width.round(), s.height.round(), scale);
     return Column(key: const ValueKey('setup'), children: [
       Expanded(
         child: ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), children: [
@@ -215,38 +262,67 @@ class _EditorScreenState extends State<EditorScreen> {
           if (s != null)
             Padding(
               padding: const EdgeInsets.only(top: 8, left: 4),
-              child: Text('${s.width.round()} x ${s.height.round()}  to  ${s.width.round() * scale} x ${s.height.round() * scale}',
+              child: Text('${s.width.round()} x ${s.height.round()}  to  $ow x $oh${ow < s.width.round() * scale ? ' (largest that fits)' : ''}',
                   style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
             ),
           const SizedBox(height: 28),
-          _section(context, 'Size', Segmented<int>(items: const [(2, '2x'), (3, '3x'), (4, '4x')], value: scale, onChanged: busy ? null : (v) => setState(() => scale = v))),
+          _section(context, 'Size', Segmented<int>(items: const [(2, '2x'), (3, '3x'), (4, '4x')], value: scale, onChanged: busy ? null : (v) => _set(() => scale = v))),
           const SizedBox(height: 28),
           _section(context, 'Mode', Column(children: [for (final m in UpModel.values) _modeTile(context, m, busy)])),
           const SizedBox(height: 28),
           _section(context, 'Look', Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Segmented<bool>(items: const [(true, 'Natural'), (false, 'More texture')], value: natural, onChanged: busy ? null : (v) => setState(() => natural = v)),
+            Segmented<bool>(items: const [(true, 'Natural'), (false, 'More texture')], value: natural, onChanged: busy ? null : (v) => _set(() => natural = v)),
             const SizedBox(height: 4),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Restore color'),
               subtitle: const Text('Gentle lift for faded photos, skin stays as it is'),
               value: color,
-              onChanged: busy ? null : (v) => setState(() => color = v),
+              onChanged: busy ? null : (v) => _set(() => color = v),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Film grain'),
               subtitle: const Text('A light grain so it looks like a photo, not a render'),
               value: grain,
-              onChanged: busy ? null : (v) => setState(() => grain = v),
+              onChanged: busy ? null : (v) => _set(() => grain = v),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Clean up JPEG compression'),
               subtitle: const Text('Removes blocks and color smears before upscaling'),
               value: cleanup,
-              onChanged: busy ? null : (v) => setState(() => cleanup = v),
+              onChanged: busy ? null : (v) => _set(() => cleanup = v),
             ),
+          ])),
+          const SizedBox(height: 28),
+          _section(context, 'Advanced', Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            LookPresetBar(value: preset, onChanged: busy ? null : _apply),
+            const SizedBox(height: 8),
+            Row(children: [
+              Text('Sharpen', style: t.titleSmall),
+              const Spacer(),
+              Text(sharpenLabel(sharpen), style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
+            ]),
+            Slider(value: sharpen, onChanged: busy ? null : (v) => _set(() => sharpen = v)),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Recover faces'),
+              subtitle: Text(switch (model) {
+                UpModel.art => 'Not used on drawings',
+                UpModel.ultra => 'Included with Ultra',
+                _ => 'Softens harsh edges on skin, lashes and beards',
+              }),
+              value: model == UpModel.ultra || (model != UpModel.art && faces),
+              onChanged: busy || model == UpModel.art || model == UpModel.ultra ? null : (v) => _set(() => faces = v),
+            ),
+            const SizedBox(height: 8),
+            Segmented<bool>(items: const [(false, 'PNG'), (true, 'JPEG')], value: jpeg, onChanged: busy ? null : (v) => setState(() => jpeg = v)),
+            if (jpeg)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('JPEG is much smaller. PNG keeps every pixel.', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
+              ),
           ])),
           if (phase == Phase.error) ...[
             const SizedBox(height: 12),
@@ -270,6 +346,11 @@ class _EditorScreenState extends State<EditorScreen> {
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOutCubic,
           child: busy ? _progress(context) : Column(children: [
+            if (resultPng != null && phase == Phase.setup)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: SizedBox(width: double.infinity, child: OutlinedButton(onPressed: () => setState(() => phase = Phase.done), child: const Text('Back to result'))),
+              ),
             if (est != null && phase != Phase.error)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
@@ -289,7 +370,7 @@ class _EditorScreenState extends State<EditorScreen> {
       Row(children: [
         Text(label, style: t.titleSmall),
         const Spacer(),
-        Text(phase == Phase.downloading ? '${(progress * 100).round()}%' : (_eta ?? ''), style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
+        Text(phase == Phase.downloading ? '${(progress * 100).round()}%' : '${(progress * 100).round()}%  ·  ${_eta ?? ''}', style: t.bodySmall?.copyWith(color: c.onSurfaceVariant)),
       ]),
       const SizedBox(height: 10),
       ClipRRect(
@@ -326,7 +407,7 @@ class _EditorScreenState extends State<EditorScreen> {
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: busy ? null : () => setState(() => model = m),
+          onTap: busy ? null : () => _set(() => model = m),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children: [

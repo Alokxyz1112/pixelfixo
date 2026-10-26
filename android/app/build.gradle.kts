@@ -33,6 +33,13 @@ android {
         versionName = flutter.versionName
     }
 
+    // Flutter resets ndk.abiFilters to every ABI. The phone only loads arm64.
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/armeabi-v7a/**", "lib/x86/**", "lib/x86_64/**")
+        }
+    }
+
     signingConfigs {
         create("release") {
             keyAlias = keyProps["keyAlias"] as String?
@@ -60,4 +67,7 @@ flutter {
     source = "../.."
 }
 
-dependencies { implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0") }
+dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+    implementation("androidx.core:core-ktx:1.16.0")
+}
